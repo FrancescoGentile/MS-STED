@@ -1,0 +1,16 @@
+name: mssted
+channels:
+  - pytorch 
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - cudatoolkit=11.3
+  - munch
+  - prettytable
+  - tensorboard
+  - tqdm
+  - scipy
+  - pyyaml

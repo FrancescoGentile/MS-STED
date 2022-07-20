@@ -1,0 +1,8 @@
+torch
+torchvision
+pyyaml
+tqdm
+scipy
+tensorboard
+prettytable
+munch

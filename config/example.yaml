@@ -1,0 +1,51 @@
+##
+##
+##
+
+gpus: 
+  - 0
+seed: 3407
+
+datasets:
+  - name: 'ntu60-xsub'
+    dataset_path: 'data/ntu60-xsub'
+    normalize: True
+    generate_args: 
+      ignored_file: 'data/ignore.txt'
+      ntu60_path: 'data/nturgbd_skeletons_s001_to_s017'
+      num_frames: 64
+
+models:
+  - name: 'MS-STE'
+    architecture: 'config/model.yaml'
+    pretrained: ''
+
+tests:
+  - batch_size: 64
+
+trainings: 
+  - model: 0
+    dataset: 0
+    train_batch_size: 2
+    eval_batch_size: 2
+    optimizer: 0
+    scheduler: 0
+    max_epoch: 64
+    resume: False
+
+optimizers: 
+  - name: 'AdamW'
+    lr: 0.001
+  - name: 'SGD'
+    lr: 0.1
+    momentum: 0.9
+    nesterov: False
+    weight_decay: 0.0001
+
+lr_schedulers: 
+  - name: 'LinearLR'
+  - name: 'OneCycleLR'
+    max_lr: 1.0
+    epochs: 64
+    steps_per_epoch: 25
+    after_batch: True
