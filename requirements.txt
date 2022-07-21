@@ -6,3 +6,4 @@ scipy
 tensorboard
 prettytable
 munch
+timm
