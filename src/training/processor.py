@@ -32,6 +32,7 @@ class TrainingProcessor:
                  config: TrainingConfig) -> None:
         self._config = config
         
+        self._scaler = GradScaler()
         self._init_environment()
         self._init_accuracy_file()
         self._logger, self._writer = self._get_loggers()
@@ -71,8 +72,6 @@ class TrainingProcessor:
                 os.unsetenv('CUBLAS_WORKSPACE_CONFIG') # to be sure
             except:
                 pass
-        
-        self._scaler = GradScaler()
         
     def _init_accuracy_file(self):
         with open(self._config.accuracy_file, 'w', newline='') as f:
@@ -237,16 +236,16 @@ class TrainingProcessor:
             y: torch.Tensor = y.long().to(self._device)
             
             # Computing logits
-            #with autocast():
-            logits = self._model(j, b)
-            loss: torch.Tensor = self._loss_func(logits, y)
+            with autocast():
+                logits = self._model(j, b)
+                loss: torch.Tensor = self._loss_func(logits, y)
                 
             train_losses.append(loss.detach().item())
             
             #'''
             self._scaler.scale(loss).backward()
             self._scaler.unscale_(self._optimizer)
-            torch.nn.utils.clip_grad_value_(self._model.parameters(), 5.0)
+            torch.nn.utils.clip_grad_norm_(self._model.parameters(), 5.0)
             self._scaler.step(self._optimizer)
             self._scaler.update()
             
@@ -290,7 +289,7 @@ class TrainingProcessor:
         last_lr_rate = self._lr_scheduler.get_last_lr()[-1]
         # Log statistics
         self._logger.info(f'Train epoch {epoch}')
-        self._logger.info(f'\tTraining time: {train_time:.2f}s - Speed: {train_speed:.2f} samples/(second * GPU')
+        self._logger.info(f'\tTraining time: {train_time:.2f}s - Speed: {train_speed:.2f} samples/(second * GPU)')
         self._logger.info(f'\tLearning rate: {last_lr_rate:.5f}')
         self._logger.info(f'\tTop-1 accuracy {num_top1:d}/{num_samples:d} ({top1_acc:.2%})')
         self._logger.info(f'\tTop-5 accuracy {num_top5:d}/{num_samples:d} ({top5_acc:.2%})')
@@ -353,7 +352,7 @@ class TrainingProcessor:
         
         # Log statistics
         self._logger.info(f'Evaluate epoch {epoch}')
-        self._logger.info(f'\tEvaluating time: {eval_time:.2f}s - Speed: {eval_speed:.2f} samples/(second * GPU')
+        self._logger.info(f'\tEvaluating time: {eval_time:.2f}s - Speed: {eval_speed:.2f} samples/(second * GPU)')
         self._logger.info(f'\tTop-1 accuracy {num_top1:d}/{num_samples:d} ({top1_acc:.2%})')
         self._logger.info(f'\tTop-5 accuracy {num_top5:d}/{num_samples:d} ({top5_acc:.2%})')
         self._logger.info(f'\tMean loss: {eval_loss:.5f}')
