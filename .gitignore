@@ -130,5 +130,6 @@ dmypy.json
 
 
 .vscode
-data
+data/*
+!data/ignore.txt
 work_dir
