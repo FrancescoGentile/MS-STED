@@ -16,13 +16,17 @@ class ModelConfig:
             raise ValueError('Missing architecture field in model config')
         model_cfg = utils.load_config_file(cfg.architecture)
         
-        if model_cfg.embeddings is None:
-            raise ValueError('Missing embeddings field in model config')
-        self._embeddings = EmbeddingsConfig(model_cfg.embeddings)
-        
         if model_cfg.encoder is None:
             raise ValueError('Missing encoder field in model config')
-        self._encoder = EncoderConfig(model_cfg.encoder, self._embeddings.out_channels)
+        self._encoder = EncoderConfig(model_cfg.encoder)
+        
+        if model_cfg.decoder is None:
+            raise ValueError('Missing decoder field in model config')
+        self._decoder = DecoderConfig(model_cfg.decoder, len(self.encoder.blocks))
+        
+        if model_cfg.embeddings is None:
+            raise ValueError('Missing embeddings field in model config')
+        self._embeddings = EmbeddingsConfig(model_cfg.embeddings, out_channels=self.encoder.in_channels)
         
     @property
     def name(self) -> str:
@@ -35,15 +39,15 @@ class ModelConfig:
     @property
     def encoder(self) -> EncoderConfig:
         return self._encoder
+    
+    @property
+    def decoder(self) -> DecoderConfig:
+        return self._decoder
 
 # Configuration for embeddings
 class EmbeddingsConfig:
-    def __init__(self, cfg: dict) -> None:
-        self._out_channels = cfg.channels
-        if cfg.channels is None:
-            raise ValueError('Missing channels field in embeddings config')
-        elif type(cfg.channels) != int:
-            raise ValueError('Channels field in embeddings config must be an integer')
+    def __init__(self, cfg: dict, out_channels: int) -> None:
+        self._out_channels = out_channels
         
         self._temporal_channels = cfg.temporal_channels
         if cfg.temporal_channels is None:
@@ -71,24 +75,51 @@ class EmbeddingsConfig:
 
 # Configuration for encoder
 class EncoderConfig:
-    def __init__(self, cfg: dict, in_channels: int) -> None:    
-        self._in_channels = in_channels
-        
+    def __init__(self, cfg: dict) -> None:
         if cfg.blocks is None:
-            raise ValueError('Missing blocks config')
+            raise ValueError('Missing blocks field in encoder config')
         elif type(cfg.blocks) != list:
-            raise ValueError('Blocks config must be a list')
+            raise ValueError('Blocks field in encoder config must be a list')
         
-        self._blocks: List[BlockConfig] = []
-        in_ch = in_channels
-        for bc in cfg.blocks:
-            block = BlockConfig(bc, in_channels=in_ch)
-            in_ch = block.out_channels
-            self._blocks.append(block)
+        self._blocks: List[BlockConfig] = [None] * len(cfg.blocks)
+        out_ch = -1
+        for idx, bc in reversed(list(enumerate(cfg.blocks))):
+            block = BlockConfig(bc, out_channels=out_ch)
+            out_ch = block.in_channels
+            self._blocks[idx] = block
     
     @property
     def in_channels(self) -> int:
-        return self._in_channels
+        return self._blocks[0].in_channels
+    
+    @property
+    def out_channels(self) -> int:
+        return self._blocks[-1].out_channels
+    
+    @property
+    def blocks(self) -> List[BlockConfig]:
+        return self._blocks
+
+# Configuration for decoder
+class DecoderConfig:
+    def __init__(self, cfg: dict, num_block: int) -> None:
+        if cfg.blocks is None:
+            raise ValueError('Missing blocks field in decoder config')
+        elif type(cfg.blocks) != list:
+            raise ValueError('Blocks field in decoder config must be a list')
+        elif len(cfg.blocks) != num_block:
+            raise ValueError('The number of decoder blocks must be equal to the number of encoder blocks')
+        
+        self._blocks: List[BlockConfig] = [None] * len(cfg.blocks)
+        out_ch = -1
+        for idx, bc in reversed(list(enumerate(cfg.blocks))):
+            block = BlockConfig(bc, out_channels=out_ch)
+            out_ch = block.in_channels
+            self._blocks[idx] = block
+            
+    @property
+    def in_channels(self) -> int:
+        return self._blocks[0].in_channels
     
     @property
     def out_channels(self) -> int:
@@ -100,15 +131,15 @@ class EncoderConfig:
 
 # Configuration for a block
 class BlockConfig:
-    def __init__(self, cfg: dict, in_channels: int) -> None:
+    def __init__(self, cfg: dict, out_channels: int) -> None:
         # Set channels
         if cfg.channels is None:
             raise ValueError('Missing channels field in block config')
         elif type(cfg.channels) != int:
             raise ValueError('Channel field in block config must be an integer')
         
-        self._out_channels = cfg.channels
-        self._in_channels = in_channels
+        self._in_channels = cfg.channels
+        self._out_channels = out_channels if out_channels > 0 else cfg.channels
         
         # Set layers
         if cfg.layers is None:
@@ -117,11 +148,12 @@ class BlockConfig:
             raise ValueError('Layers field in block confif must be a list')
         
         self._layers: List[LayerConfig] = []
-        in_ch = in_channels
-        out_ch = self.out_channels
-        for lc in cfg.layers:
+        in_ch = self.in_channels
+        out_ch = self.in_channels
+        for idx, lc in enumerate(cfg.layers):
+            if idx == len(cfg.layers) - 1:
+                out_ch = self.out_channels
             self._layers.append(LayerConfig(lc, in_ch, out_ch))
-            in_ch = out_ch
     
     @property
     def in_channels(self) -> int:
@@ -159,7 +191,7 @@ class LayerConfig:
         
         self._branches: List[LayerConfig] = []
         for bc in cfg.branches:
-            self._branches.append(BranchConfig(bc, in_channels, out_channels))
+            self._branches.append(BranchConfig(bc, in_channels, in_channels))
             
     @property
     def in_channels(self) -> int:
@@ -227,4 +259,3 @@ class BranchConfig:
     @property
     def dilation(self) -> int:
         return self._dilation
-    

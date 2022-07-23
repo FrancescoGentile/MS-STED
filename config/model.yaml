@@ -7,109 +7,137 @@ embeddings:
   type_channels: 5
   channels: 64
 encoder:
-  blocks: 
-  - channels: 64
-    layers:
-      - cross_view: False
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-      - cross_view: True 
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-      - cross_view: False
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-  - channels: 128
-    layers:
-      - cross_view: False
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-      - cross_view: True 
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-      - cross_view: False
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-  - channels: 256
-    layers:
-      - cross_view: False
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-      - cross_view: True 
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
-      - cross_view: False
-        branches:
-          - window: 3
-            dilation: 1
-            num_heads: 8
-          - window: 3
-            dilation: 2
-            num_heads: 8
-          - window: 5
-            dilation: 3
-            num_heads: 8
+  blocks:
+    - channels: 64
+      layers:
+        - cross_view: false
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+        - cross_view: true
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+        - cross_view: false
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+    - channels: 128
+      layers:
+        - cross_view: false
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+        - cross_view: true
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+        - cross_view: false
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+    - channels: 256
+      layers:
+        - cross_view: false
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+        - cross_view: true
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+        - cross_view: false
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+            - window: 3
+              dilation: 2
+              num_heads: 8
+            - window: 5
+              dilation: 3
+              num_heads: 8
+decoder:
+  blocks:
+    - channels: 256
+      layers:
+        - cross_view: False
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+    - channels: 128
+      layers:
+        - cross_view: False
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+    - channels: 64
+      layers:
+        - cross_view: False
+          branches:
+            - window: 3
+              dilation: 1
+              num_heads: 8
+        - cross_view: False
+          branches:
+            - window: 5
+              dilation: 1
+              num_heads: 8

@@ -38,8 +38,8 @@ class Embeddings(nn.Module):
         total_channels = in_channels + self._type_channels + 2 * self._id_channels + config.temporal_channels
         self.embed_proj = nn.Conv2d(total_channels, config.out_channels, kernel_size=1)
         
-        self.norm = nn.BatchNorm2d(config.out_channels)
-        self.dropout = nn.Dropout(p=0.1)
+        #self.norm = nn.BatchNorm2d(config.out_channels)
+        #self.dropout = nn.Dropout(p=0.1)
     
     def _get_id_embeddings(self) -> Tuple[torch.Tensor, int]:
         laplacian = self._skeleton.laplacian_matrix
@@ -109,8 +109,8 @@ class Embeddings(nn.Module):
         # projection -> batch norm -> dropout
         concat = torch.cat([j, b], dim=-1)
         output = self.embed_proj(concat)
-        output = self.norm(output)
-        output = self.dropout(output)
+        #output = self.norm(output)
+        #output = self.dropout(output)
         
         return output
         

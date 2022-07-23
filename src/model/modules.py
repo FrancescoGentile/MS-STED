@@ -70,69 +70,79 @@ class Branch(nn.Module):
             dilation=(config.dilation, 1),
             padding=(padding, 0))
         
-        
+        self.q_norm = nn.LayerNorm(config.in_channels)
+        self.kv_norm = nn.LayerNorm(config.in_channels)
         self.attention = SpatioTemporalAttention(config)
-        self.norm1 = nn.BatchNorm2d(config.out_channels)
+        self.dropout = nn.Dropout(p=0.1)
         
-        if config.in_channels == config.out_channels:
-            self.residual = nn.Identity()
-        else:
-            self.residual = nn.Conv2d(
-                config.in_channels, 
-                config.out_channels, 
-                kernel_size=1,
-                bias=False
-            )
-            
+        self.ffn_norm = nn.LayerNorm(config.out_channels)
         self.fnn = nn.Sequential(
-            nn.Conv2d(config.out_channels, config.out_channels, kernel_size=1, bias=False),
+            nn.Linear(config.out_channels, config.out_channels),
             nn.ReLU(inplace=True), 
-            nn.BatchNorm2d(config.out_channels), # ! batchnorm
-            nn.Conv2d(config.out_channels, config.out_channels, kernel_size=1, bias=False)
+            nn.Linear(config.out_channels, config.out_channels),
+            nn.Dropout(p=0.1)
         )
-        self.norm2 = nn.BatchNorm2d(config.out_channels)
-    
-    def _linearize(self, x: torch.Tensor) -> torch.Tensor:
+        
+    def _group_window(self, x: torch.Tensor) -> torch.Tensor:
         N, C, T, V = x.shape
         #(N, C * window, T, V)
         x = self.unfold(x)
         # (N, C, window, T, V)
         x = x.view(N, C, self.window, T, V)
-        # (N, T, window_size, V, C)
-        x = x.permute(0, 3, 2, 4, 1).contiguous()
-        # (N * T, V * window, C)
-        x = x.view(N * T, V * self.window, C)
+        # (N, C, T, window, V)
+        x = x.permute(0, 1, 3, 2, 4).contiguous()
+        # (N, C, T, window * V)
+        x = x.view(N, C, T, self.window * V)
+        
+        return x
+
+    def _ungroup_window(self, x: torch.Tensor) -> torch.Tensor:
+        N, V, C = x.shape
+        # (N, window, V, C)
+        x = x.view(N, self.window, -1, C)
+        # (N, V, C)
+        x = x.mean(dim=1)
         
         return x
     
-    def _unlinearize(self, x: torch.Tensor, batch: int) -> torch.Tensor:
+    def _flatten(self, x: torch.Tensor) -> torch.Tensor:
+        N, C, T, V = x.shape
+        #(N, T, V, C)
+        x = x.permute(0, 2, 3, 1).contiguous()
+        # (N * T, V, C)
+        x = x.view(N * T, V, C)
+        
+        return x
+    
+    def _unflatten(self, x: torch.Tensor, batch: int) -> torch.Tensor:
         _, V, C = x.shape
-        # (N, T, V * window, C)
-        x = x.view(batch, -1, V, C)
-        N, T, V, C = x.shape
-        # (N, T, window, V, C)
-        x = x.view(N, T, self.window, -1, C)
         # (N, T, V, C)
-        x = x.mean(dim=2)
+        x = x.view(batch, -1, V, C)
         # (N, C, T, V)
         x = x.permute(0, 3, 1, 2).contiguous()
         
         return x
     
-    def forward(self, x_q: torch.Tensor, x_kv: Optional[torch.Tensor] = None) -> torch.Tensor:
-        N, _, _, _ = x_q.shape
-        linear_xq = self._linearize(x_q)
-        linear_xkv = self._linearize(x_kv) if x_kv is not None else None
+    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None) -> torch.Tensor:
+        batch, _, _, _ = x.shape
+        
+        x_q = self._flatten(self._group_window(x))
+        x_kv = self._flatten(self._group_window(cross_x)) if cross_x is not None else x_q
+        xf = self._flatten(x)
         
         # Attention
-        tmp: torch.Tensor = self.attention(linear_xq, linear_xkv)
-        tmp = self._unlinearize(tmp, batch=N)
-        res = self.residual(x_q)
-        tmp = self.norm1(tmp + res)
+        x_q = self.q_norm(x_q)
+        x_kv = self.kv_norm(x_kv)
+        tmp: torch.Tensor = self.attention(x_q, x_kv)
+        tmp = self._ungroup_window(tmp)
+        tmp = self.dropout(tmp)
+        tmp += xf
         
         # Position-wise FFN
-        out: torch.Tensor = self.fnn(tmp)
-        out = self.norm2(out + tmp) 
+        out = self.ffn_norm(tmp)
+        out: torch.Tensor = self.fnn(out)
+        out += tmp
+        out = self._unflatten(out, batch)
         
         return out
 
@@ -140,7 +150,7 @@ class Branch(nn.Module):
 class SpatioTemporalAttention(nn.Module):
     def __init__(self, config: BranchConfig):
         super().__init__()
-        
+        *
         self.config = config
         self.attention_head_size = config.out_channels // config.num_heads
         self.num_attention_heads = config.num_heads
@@ -248,13 +258,10 @@ class SpatioTemporalAttention(nn.Module):
         
         return x
     
-    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
         
         #print('-------------------------------')
         #print(f'(before) mean: {x.mean().detach().item():.5e} - std: {x.std().detach().item():.5e}')
-        
-        x_q = x
-        x_kv = cross_x if cross_x is not None else x
         
         # (N, L, C_out)
         queries: torch.Tensor = self.query(x_q)
