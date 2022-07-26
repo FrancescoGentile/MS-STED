@@ -24,7 +24,7 @@ class NTUDatasetGenerator(DatasetGenerator):
     
     def __init__(self, config: NTUDatasetConfig) -> None:
         self.config = config
-        log_file = os.path.join(self.config.dataset_path, 'log.txt')
+        log_file = os.path.join(self.config._dataset_path, 'log.txt')
         self.logger: logging.Logger = utils.init_logger(name=self.config.name, 
                                                         level=logging.INFO,
                                                         file=log_file)
@@ -534,10 +534,10 @@ class NTUDatasetGenerator(DatasetGenerator):
         res['bones']['z']['angle'] = { 'mean': zb_ang_mean, 'std': zb_ang_std }
         
         # save results
-        file = os.path.join(self.config.dataset_path, f'{phase}_mean_std.yaml')
+        file = os.path.join(self.config._dataset_path, f'{phase}_mean_std.yaml')
         self.logger.info(f'Saving mean and std of data in {file}')
-        with open(file, 'w') as f:
-            yaml.dump(res, f)
+        with open(file, 'w', newline='') as f:
+            yaml.safe_dump(res, f, default_flow_style=False)
                             
     def _gendata(self, files: List[Tuple[str, str]], phase: str): 
         data = []
@@ -553,13 +553,13 @@ class NTUDatasetGenerator(DatasetGenerator):
         
         # Save joints
         data = np.array(data)
-        data_file = os.path.join(self.config.dataset_path, f'{phase}_data.npy')
+        data_file = os.path.join(self.config._dataset_path, f'{phase}_data.npy')
         self.logger.info(f'Saving skeletons data in {data_file}')
         np.save(data_file, data)
         
         # Save labels
         labels = np.array(labels)
-        labels_file = os.path.join(self.config.dataset_path, f'{phase}_labels.npy')
+        labels_file = os.path.join(self.config._dataset_path, f'{phase}_labels.npy')
         self.logger.info(f'Saving labels data in {labels_file}')
         np.save(labels_file, labels)
         

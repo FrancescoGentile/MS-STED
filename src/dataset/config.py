@@ -20,15 +20,18 @@ class DatasetConfigBuilder:
             raise ValueError(f'No dataset {options.name} exists.')
 
 
-class DatasetConfig:  
+class DatasetConfig:
+    
+    def to_dict(self, generate: bool, training: bool) -> dict:
+        raise NotImplementedError
     
     def to_skeleton_graph(self) -> SkeletonGraph:
         raise NotImplementedError
           
     def to_dataset(self, 
-                   skeleton_graph: SkeletonGraph,
-                   train: bool,
-                   logger: logging.Logger) -> Dataset:
+        skeleton: SkeletonGraph,
+        train_set: bool, 
+        pretrain: bool) -> Dataset:
         raise NotImplementedError()
     
     def to_generator(self) -> DatasetGenerator:

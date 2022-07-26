@@ -28,6 +28,24 @@ class ModelConfig:
             raise ValueError('Missing embeddings field in model config')
         self._embeddings = EmbeddingsConfig(model_cfg.embeddings, out_channels=self.encoder.in_channels)
         
+    def to_dict(self, architecture: bool) -> dict:
+        """_summary_
+
+        Args:
+            architecture (bool): whether to add the architecture to the dictionary
+
+        Returns:
+            dict: _description_
+        """
+        d = {'name': self._name }
+        
+        if architecture:
+            d['embeddings'] = self._embeddings.to_dict()
+            d['encoder'] = self._encoder.to_dict()
+            d['decoder'] = self._decoder.to_dict()
+        
+        return d
+        
     @property
     def name(self) -> str:
         return self._name
@@ -61,6 +79,13 @@ class EmbeddingsConfig:
         elif type(cfg.type_channels) != int:
             raise ValueError('Type-channels field in embeddings config must be an integer')
     
+    def to_dict(self) -> dict:
+        d = {'temporal-channels': self._temporal_channels, 
+             'type-channels': self._type_channels, 
+             'out-channels': self._out_channels}
+        
+        return d
+    
     @property
     def out_channels(self) -> int:
         return self._out_channels
@@ -87,6 +112,18 @@ class EncoderConfig:
             block = BlockConfig(bc, out_channels=out_ch)
             out_ch = block.in_channels
             self._blocks[idx] = block
+    
+    def to_dict(self) -> dict:
+        d = {'in-channels': self.in_channels,
+             'out-channels': self.out_channels}
+        
+        blocks = []
+        for b in self._blocks:
+            blocks.append(b.to_dict())
+        
+        d['blocks'] = blocks
+        
+        return d
     
     @property
     def in_channels(self) -> int:
@@ -116,6 +153,18 @@ class DecoderConfig:
             block = BlockConfig(bc, out_channels=out_ch)
             out_ch = block.in_channels
             self._blocks[idx] = block
+            
+    def to_dict(self) -> dict:
+        d = {'in-channels': self.in_channels,
+             'out-channels': self.out_channels}
+        
+        blocks = []
+        for b in self._blocks:
+            blocks.append(b.to_dict())
+        
+        d['blocks'] = blocks
+        
+        return d
             
     @property
     def in_channels(self) -> int:
@@ -154,6 +203,18 @@ class BlockConfig:
             if idx == len(cfg.layers) - 1:
                 out_ch = self.out_channels
             self._layers.append(LayerConfig(lc, in_ch, out_ch))
+            
+    def to_dict(self) -> dict:
+        d = {'in-channels': self.in_channels,
+             'out-channels': self.out_channels}
+        
+        layers = []
+        for l in self._layers:
+            layers.append(l.to_dict())
+        
+        d['layers'] = layers
+        
+        return d
     
     @property
     def in_channels(self) -> int:
@@ -192,6 +253,18 @@ class LayerConfig:
         self._branches: List[LayerConfig] = []
         for bc in cfg.branches:
             self._branches.append(BranchConfig(bc, in_channels, in_channels))
+            
+    def to_dict(self) -> dict:
+        d = {'in-channels': self.in_channels,
+             'out-channels': self.out_channels}
+        
+        branches = []
+        for b in self._branches:
+            branches.append(b.to_dict())
+        
+        d['branches'] = branches
+        
+        return d
             
     @property
     def in_channels(self) -> int:
@@ -239,6 +312,15 @@ class BranchConfig:
             raise ValueError('Dilation field in branch config must be an integer')
         
         self._dilation = cfg.dilation
+        
+    def to_dict(self) -> dict:
+        d = {'in-channels': self._in_channels,
+             'out-channels': self._out_channels, 
+             'window': self._window,
+             'dilation': self._dilation,
+             'num-heads': self._num_heads}
+        
+        return d
         
     @property
     def in_channels(self) -> int:

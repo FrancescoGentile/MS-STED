@@ -6,9 +6,9 @@ import argparse
 import logging
 import traceback
 
-from src.training.processor import TrainingProcessor
 from src.config import Config
 import src.utils as utils
+import src.training as training
 
 def init_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='MS-STA for skeleton-based action recognition')
@@ -40,20 +40,6 @@ def generate(configs: Config, logger: logging.Logger):
             else: 
                 logger.error(e)
 
-def train(configs: Config, logger: logging.Logger):
-    for idx, config in enumerate(configs.trainings_config):
-        try:
-            logger.info(f'Starting training process {idx}')
-            tp = TrainingProcessor(config)
-            tp.start()
-            logger.info(f'Finished training process {idx}')
-        except Exception as e:
-            logger.error(f'Training process {idx} failed with the following exception:')
-            if configs.debug:
-                logger.exception(e)
-            else: 
-                logger.error(e)
-
 def main(): 
     parser = init_parser()
     args = parser.parse_args()
@@ -72,7 +58,7 @@ def main():
         generate(config, logger)
 
     if args.train:
-        train(config, logger)
+        training.start_trainings(config.trainings_config, logger, config.debug)
 
 if __name__ == '__main__':
     main()

@@ -78,7 +78,7 @@ class Branch(nn.Module):
         self.ffn_norm = nn.LayerNorm(config.out_channels)
         self.fnn = nn.Sequential(
             nn.Linear(config.out_channels, config.out_channels),
-            nn.ReLU(inplace=True), 
+            nn.GELU(), 
             nn.Linear(config.out_channels, config.out_channels),
             nn.Dropout(p=0.1)
         )

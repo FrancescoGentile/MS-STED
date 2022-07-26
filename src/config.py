@@ -59,6 +59,8 @@ class Config:
         datasets = []
         for opt in dataset_options:
             opt.debug = self.debug
+            if opt.seed is None:
+                opt.seed = self.seed
             datasets.append(DatasetConfigBuilder.build(opt, generate))
         
         return datasets
@@ -129,20 +131,21 @@ class Config:
             raise ValueError('Configurations for trainings must be a list.')
 
         trainings = []
-        for idx, opt in enumerate(training_options): 
+        for idx, opt in enumerate(training_options):
+            opt.debug = self.debug
             if opt.work_dir is None:
-                opt.work_dir = self.work_dir
+                opt.work_dir = os.path.join(self.work_dir, f'training-{idx}')
             if opt.gpus is None:
                 opt.gpus = self.gpus
             if opt.seed is None: 
                 opt.seed = self.seed
             opt.debug = self.debug
-            trainings.append(TrainingConfig(opt, 
-                                            self.datasets_config, 
-                                            self.models_config,
-                                            self.optimizers_config, 
-                                            self.lr_schedulers_config, 
-                                            idx))
+            trainings.append(TrainingConfig(
+                opt, 
+                self.datasets_config, 
+                self.models_config,
+                self.optimizers_config,
+                self.lr_schedulers_config))
         
         return trainings
 
@@ -158,17 +161,18 @@ class Config:
             raise ValueError('Configurations for tests must be a list.')
 
         tests = []
-        for opt in test_options: 
+        for idx, opt in enumerate(test_options): 
             if opt.work_dir is None:
-                opt.work_dir = self.work_dir
+                opt.work_dir = os.path.join(self.work_dir, f'test-{idx}')
             if opt.gpus is None:
                 opt.gpus = self.gpus
             if opt.seed is None: 
                 opt.seed = self.seed
             opt.debug = self.debug
-            tests.append(TestConfig(opt,
-                                    self.datasets_config,
-                                    self.models_config))
+            tests.append(TestConfig(
+                opt,
+                self.datasets_config,
+                self.models_config))
         
         return tests
     

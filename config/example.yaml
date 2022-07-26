@@ -9,8 +9,12 @@ seed: 3407
 datasets:
   - name: 'ntu60-xsub'
     dataset_path: 'data/ntu60-xsub'
-    normalize: True
-    generate_args: 
+    training_args:
+      normalize: True
+      change_probability: 0.15
+      shuffle_probability: 0.15
+      shuffle_length: 3
+    generation_args: 
       ignored_file: 'data/ignore.txt'
       ntu60_path: 'data/nturgbd_skeletons_s001_to_s017'
       num_frames: 64
@@ -26,26 +30,44 @@ tests:
 trainings: 
   - model: 0
     dataset: 0
-    train_batch_size: 2
-    eval_batch_size: 2
-    optimizer: 0
-    scheduler: 0
-    max_epoch: 64
-    resume: False
+    #pretraining_args:
+    #  train_batch_size: 64
+    #  eval_batch_size: 64
+    #  accumulation_steps: 32
+    #  num_epochs: 64
+    #  save_interleave: 2
+    #  optimizer: 0
+    #  scheduler: 0
+    classification_args:
+      train_batch_size: 64
+      eval_batch_size: 64
+      accumulation_steps: 32
+      num_epochs: 64
+      save_interleave: 2
+      optimizer: 0
+      scheduler: 0
+      label_smoothing: 0.1
 
 optimizers: 
   - name: 'AdamW'
-    lr: 0.001
+    args:
+      lr: 0.001
   - name: 'SGD'
-    lr: 0.1
-    momentum: 0.9
-    nesterov: False
-    weight_decay: 0.0001
+    args:
+      lr: 0.1
+      momentum: 0.9
+      nesterov: False
+      weight_decay: 0.0001
 
 lr_schedulers: 
+  - name: 'CosineLRScheduler'
+    args:
+      t_initial: 10
+      t_mul: 2
   - name: 'LinearLR'
   - name: 'OneCycleLR'
-    max_lr: 1.0
-    epochs: 64
-    steps_per_epoch: 25
-    after_batch: True
+    step_after_batch: True
+    args:
+      max_lr: 1.0
+      epochs: 64
+      steps_per_epoch: 25

@@ -10,6 +10,10 @@ import os
 from munch import DefaultMunch
 import yaml
 
+class NoAliasDumper(yaml.SafeDumper):
+    def ignore_aliases(self, data):
+        return True
+
 def load_config_file(path: str) -> dict:
     if not os.path.isfile(path):
         raise ValueError(f'Config file {path} does not exist.')
