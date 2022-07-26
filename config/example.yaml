@@ -43,7 +43,7 @@ trainings:
       eval_batch_size: 64
       accumulation_steps: 32
       num_epochs: 64
-      save_interleave: 2
+      save_interleave: 1
       optimizer: 0
       scheduler: 0
       label_smoothing: 0.1

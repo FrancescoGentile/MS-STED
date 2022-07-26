@@ -377,7 +377,7 @@ class ClassificationProcessor:
                 # Save model weights
                 torch.save(self._model.state_dict(), self._cconfig.best_weights_file)
                 
-            if epoch % self._cconfig.save_interleave == 0:
+            if (epoch + 1) % self._cconfig.save_interleave == 0:
                 self._save_checkpoint(epoch, best_results)
 
             
