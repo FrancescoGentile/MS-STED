@@ -14,6 +14,14 @@ class NoAliasDumper(yaml.SafeDumper):
     def ignore_aliases(self, data):
         return True
 
+class Filter(logging.Filter):
+    def __init__(self, name: str, local_master: bool) -> None:
+        super().__init__(name)
+        self._local_master = local_master
+        
+    def filter(self, _) -> bool:
+        return self._local_master
+
 def load_config_file(path: str) -> dict:
     if not os.path.isfile(path):
         raise ValueError(f'Config file {path} does not exist.')
@@ -32,7 +40,7 @@ def init_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
 
-def init_logger(name: str, level: int = logging.INFO, file: Optional[str] = None) -> logging.Logger:
+def init_logger(name: str, level: int, file: Optional[str], local_master: bool) -> logging.Logger:
     """
     Initialize a logger.
     Args:
@@ -56,6 +64,7 @@ def init_logger(name: str, level: int = logging.INFO, file: Optional[str] = None
     stream_handler.setFormatter(formatter)
     stream_handler.setLevel(level)
     logger.addHandler(stream_handler)
+    logger.addFilter(Filter(name, local_master))
 
     if file is not None:
         file_handler = logging.FileHandler(

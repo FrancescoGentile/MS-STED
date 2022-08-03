@@ -4,9 +4,10 @@
 
 import os
 from time import strftime
-from typing import List
+from typing import List, Optional
 
 from . import utils
+from .distributed import DistributedConfig
 from .dataset.config import DatasetConfig, DatasetConfigBuilder
 from .model.config import ModelConfig
 from .training.optimizer import OptimizerConfig
@@ -15,17 +16,22 @@ from .test.config import TestConfig
 from .training.config import TrainingConfig
 
 class Config:
-    
-    def __init__(self, 
-                 config_file: str,
-                 generate: bool,
-                 train: bool, 
-                 test: bool, 
-                 debug: bool) -> None:
+    def __init__(
+        self, 
+        path: str,
+        dist_path: Optional[str],
+        rank: Optional[int], 
+        generate: bool,
+        train: bool, 
+        test: bool, 
+        debug: bool) -> None:
         
-        cfg = utils.load_config_file(config_file)
+        cfg = utils.load_config_file(path)
         
         self.debug = debug
+        self.generate = generate
+        self.train = train
+        self.test = test
         
         self.work_dir = cfg.work_dir
         if self.work_dir is None:
@@ -34,13 +40,14 @@ class Config:
         self.work_dir = os.path.join(self.work_dir, strftime('%Y-%m-%d-%H-%M-%S'))
         utils.check_and_create_dir(self.work_dir)
         
-        config_name = os.path.splitext(config_file)[0]
+        config_name = os.path.splitext(path)[0]
         config_name = os.path.basename(config_name)
         self.log_file = os.path.join(self.work_dir, f'{config_name}.log')
         
         self.gpus = cfg.gpus
         self.seed = cfg.seed
         
+        self._distributed = DistributedConfig(dist_path, rank)
         self.datasets_config = self._get_datasets(cfg, generate)
         self.models_config = Config._get_models(cfg, train, test)
         self.optimizers_config = Config._get_optimizers(cfg, train)
@@ -135,11 +142,10 @@ class Config:
             opt.debug = self.debug
             if opt.work_dir is None:
                 opt.work_dir = os.path.join(self.work_dir, f'training-{idx}')
-            if opt.gpus is None:
-                opt.gpus = self.gpus
             if opt.seed is None: 
                 opt.seed = self.seed
             opt.debug = self.debug
+            opt.distributed = self._distributed
             trainings.append(TrainingConfig(
                 opt, 
                 self.datasets_config, 
@@ -176,3 +182,6 @@ class Config:
         
         return tests
     
+    @property
+    def distributed(self) -> DistributedConfig:
+        return self._distributed

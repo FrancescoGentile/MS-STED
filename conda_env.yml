@@ -15,3 +15,5 @@ dependencies:
   - scipy
   - pyyaml
   - timm
+  - torchmetrics
+  - wandb

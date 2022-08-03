@@ -5,10 +5,13 @@
 import argparse
 import logging
 import traceback
+import torch.distributed
 
 from src.config import Config
+import src.distributed as dist
 import src.utils as utils
 import src.training as training
+import src.dataset as dataset
 
 def init_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='MS-STA for skeleton-based action recognition')
@@ -23,42 +26,45 @@ def init_parser() -> argparse.ArgumentParser:
                         help='whether or not to start tests')
     parser.add_argument('--debug', default=False, action='store_true', 
                         help='whether or not to set debug options')
+    parser.add_argument('--distributed', default=None, type=str, 
+                        help='path to the distributed config')
+    parser.add_argument('--rank', default=None, type=int,
+                        help='rank of this node')
 
     return parser
 
-def generate(configs: Config, logger: logging.Logger):
-    for idx, config in enumerate(configs.datasets_config):
-        try:
-            logger.info(f'Starting generation process {idx}')
-            gp = config.to_generator()
-            gp.start()
-            logger.info(f'Finished generation process {idx}')
-        except Exception as e:
-            logger.error(f'Generation process {idx} failed with the following exception:')
-            if configs.debug:
-                logger.exception(e)
-            else: 
-                logger.error(e)
+def start(config: Config):
+    utils.init_logging()
+    logger = utils.init_logger('main', logging.INFO, config.log_file, config.distributed.is_local_master())
+    
+    if config.distributed.is_local_master() and config.generate:
+        dataset.start_generations(config.datasets_config, logger, config.debug)
+    
+    torch.distributed.barrier()
+
+    if config.train:
+        training.start_trainings(config.trainings_config, logger, config.debug)
+
 
 def main(): 
     parser = init_parser()
     args = parser.parse_args()
     
     try:
-        config = Config(args.config, args.generate, args.train, args.test, args.debug)
+        config = Config(
+            args.config,
+            args.distributed,
+            args.rank,
+            args.generate, 
+            args.train, 
+            args.test, 
+            args.debug)
     except Exception as e:
         message = traceback.format_exc().strip('\n') if args.debug else e
         print(message)
         exit(1)
-    
-    utils.init_logging()
-    logger = utils.init_logger('main', logging.INFO, config.log_file)
-    
-    if args.generate: 
-        generate(config, logger)
-
-    if args.train:
-        training.start_trainings(config.trainings_config, logger, config.debug)
+        
+    dist.run(config.distributed, start, config)
 
 if __name__ == '__main__':
     main()

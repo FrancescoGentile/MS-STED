@@ -7,3 +7,5 @@ tensorboard
 prettytable
 munch
 timm
+torchmetrics
+wandb

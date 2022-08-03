@@ -2,8 +2,6 @@
 ##
 ##
 
-gpus: 
-  - 0
 seed: 3407
 
 datasets:
@@ -16,13 +14,12 @@ datasets:
       shuffle_length: 3
     generation_args: 
       ignored_file: 'data/ignore.txt'
-      ntu60_path: 'data/nturgbd_skeletons_s001_to_s017'
+      ntu60_path: 'data/nturgb+d_skeletons'
       num_frames: 64
 
 models:
   - name: 'MS-STE'
     architecture: 'config/model.yaml'
-    pretrained: ''
 
 tests:
   - batch_size: 64
@@ -30,19 +27,20 @@ tests:
 trainings: 
   - model: 0
     dataset: 0
-    #pretraining_args:
-    #  train_batch_size: 64
-    #  eval_batch_size: 64
-    #  accumulation_steps: 32
-    #  num_epochs: 64
-    #  save_interleave: 2
-    #  optimizer: 0
-    #  scheduler: 0
+    seed: 1
+    pretraining_args:
+      train_batch_size: 64
+      eval_batch_size: 64
+      accumulation_steps: 16
+      num_epochs: 3
+      save_interleave: 1
+      optimizer: 0
+      scheduler: 0
     classification_args:
       train_batch_size: 64
       eval_batch_size: 64
-      accumulation_steps: 32
-      num_epochs: 64
+      accumulation_steps: 16
+      num_epochs: 3
       save_interleave: 1
       optimizer: 0
       scheduler: 0

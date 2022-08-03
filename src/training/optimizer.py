@@ -22,7 +22,7 @@ class OptimizerConfig:
     
     def to_optimizer(self, params: Iterator[Parameter]) -> Optimizer:
         cls  = utils.get_class_by_name('torch.optim', self._name)
-        return cls(params=params, **self._args)
+        return cls(params, **self._args)
 
     def to_dict(self) -> dict:
         d = {'name': self._name,
@@ -32,7 +32,7 @@ class OptimizerConfig:
     
     def __str__(self) -> str:
         return self._name
-    
+
     @property
     def name(self) -> str:
         return self._name

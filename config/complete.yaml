@@ -2,10 +2,6 @@
 ##
 ##
 
-# list of gpus to use for training and testings
-# at the moment, only one gpu is supported
-gpus: 
-  - 0
 # https://arxiv.org/abs/2109.08203
 seed: 3407
 work-dir: '/path/to/work_dir' # directory where to save all results of trainings and tests (default: ./work_dir)
@@ -14,7 +10,11 @@ work-dir: '/path/to/work_dir' # directory where to save all results of trainings
 datasets:
   - name: 'ntu60-xsub' # name of the dataset (options: ntu60-xsub, ntu60-xview, ntu120-xsub, ntu120-xset)
     dataset_path: 'data/ntu60-xsub' # path where the processed dataset will be saved or can be found
-    normalize: True # whether or not to standardize the dataset (default: False)
+    training_args:
+      normalize: True # whether or not to standardize the dataset (default: False)
+      change_probability: 0.15 # probability that a joint will be changed
+      shuffle_probability: 0.15 # probability that a joint will be shuffled
+      shuffle_length: 3 # how many contiguous joints can be shuffled
     generate_args: # options used for dataset generation
       ignored_file: 'data/ignore.txt' # file with list of samples to ignore
       ntu60_path: 'data/nturgbd_skeletons_s001_to_s017'
@@ -23,8 +23,7 @@ datasets:
 # list of models for training and testing
 models:
   - name: 'MS-STED' # name of the model
-    architecture: 'path/to/architecture/config'
-    pretrained: '/path/to/weights.pth' # mandatory field for testing
+    architecture: 'path/to/architecture/config.yaml' # path to the architecture  
 
 # currently not supported
 tests:
@@ -34,24 +33,41 @@ tests:
 trainings: 
   - model: 0 # index of the model to use
     dataset: 0 # index of the dataset to use
-    optimizer: 0 # index of the optimizer to use
-    scheduler: 0 # index of the LR scheduler to use
-    train_batch_size: 2
-    eval_batch_size: 1
-    max_epoch: 64 # number of epochs
-    resume: False 
-# inside each training, you can specify different work_dir, gpus and seed options
+    resume: 'p-1' # resume pretraining after epoch 1
+    # work-dir: 'path/to/work-dir' # this is optional except if you want to resume training
+    # seed: 10 # changed seed for this training
+    pretraining_args:
+      train_batch_size: 64
+      eval_batch_size: 64
+      accumulation_steps: 16
+      num_epochs: 3
+      save_interleave: 1 # save checkpoint afterhow many epochs from the previous checkpoint
+      optimizer: 0 # index of the optimizer to use
+      scheduler: 0 # index of the LR scheduler to use
+      reconstruction-lambda: 0.5 # default 1.0
+      discrimination-lambda: 0.1 # default 1.0
+    classification_args:
+      train_batch_size: 64
+      eval_batch_size: 64
+      accumulation_steps: 16
+      num_epochs: 3
+      save_interleave: 1
+      optimizer: 0
+      scheduler: 0
+      label_smoothing: 0.1
 
 # list of optimizers to use for training
 optimizers: 
   - name: 'AdamW' # name of the optimizer (this is the name of the pytorch class)
-    lr: 0.01
+    arsg:
+      lr: 0.01
   - name: 'SGD'
     # parameters that will be passed to the constructor
-    lr: 0.1
-    momentum: 0.9
-    nesterov: False
-    weight_decay: 0.0001
+    args:
+      lr: 0.1
+      momentum: 0.9
+      nesterov: False
+      weight_decay: 0.0001
 
 # list of LR schedulers
 lr_schedulers: 
@@ -60,6 +76,7 @@ lr_schedulers:
   - name: 'OneCycleLR'
     after_batch: True
     # parameters that will be passed to the constructor
-    max_lr: 1.0
-    epochs: 64
-    steps_per_epoch: 10022
+    arsg:
+      max_lr: 1.0
+      epochs: 64
+      steps_per_epoch: 10022
