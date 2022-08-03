@@ -73,14 +73,15 @@ class Branch(nn.Module):
         self.q_norm = nn.LayerNorm(config.in_channels)
         self.kv_norm = nn.LayerNorm(config.in_channels)
         self.attention = SpatioTemporalAttention(config)
-        self.dropout = nn.Dropout(p=0.1)
+        self.dropout = nn.Dropout(p=config.sublayer_dropout)
         
         self.ffn_norm = nn.LayerNorm(config.out_channels)
         self.fnn = nn.Sequential(
             nn.Linear(config.out_channels, config.out_channels),
             nn.GELU(), 
+            nn.Dropout(config.feature_dropout),
             nn.Linear(config.out_channels, config.out_channels),
-            nn.Dropout(p=0.1)
+            nn.Dropout(p=config.sublayer_dropout)
         )
         
     def _group_window(self, x: torch.Tensor) -> torch.Tensor:
@@ -227,7 +228,7 @@ class SpatioTemporalAttention(nn.Module):
         return weighted_value
 
 ''' 
-  
+'''
 class SpatioTemporalAttention(nn.Module):
     
     def __init__(self, config: BranchConfig) -> None:
@@ -259,9 +260,6 @@ class SpatioTemporalAttention(nn.Module):
         return x
     
     def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
-        
-        #print('-------------------------------')
-        #print(f'(before) mean: {x.mean().detach().item():.5e} - std: {x.std().detach().item():.5e}')
         
         # (N, L, C_out)
         queries: torch.Tensor = self.query(x_q)
@@ -305,6 +303,134 @@ class SpatioTemporalAttention(nn.Module):
         output = keys_values + queries
         # (N, L, C_out)
         output = self.linear(output)
+        
+        return output
+''' 
+
+class SpatioTemporalAttention(nn.Module):
+    
+    def __init__(self, config: BranchConfig) -> None:
+        super().__init__()
+
+        self._num_heads = config.num_heads
+        self._out_channels = config.out_channels
+        self._head_channels = config.out_channels // config.num_heads
+        self._fdrop = nn.Dropout(config.feature_dropout)
+        self._sdrop = None
+        
+        # Layers
+        self.query = nn.Linear(config.in_channels, config.out_channels)
+        self.query_att = nn.Conv2d(self._head_channels, 1, kernel_size=1)
+        
+        self.key = nn.Linear(config.in_channels, config.out_channels)
+        self.key_att = nn.Conv2d(self._head_channels, 1, kernel_size=1)
+        
+        self.value = nn.Linear(config.in_channels, config.out_channels)
+        self.transform = nn.Conv2d(self._head_channels, self._head_channels, kernel_size=1)
+        
+        self.proj = nn.Linear(config.out_channels, config.out_channels)
+        
+        self.softmax = nn.Softmax(-1)
+    
+    @property
+    def structure_dropout(self) -> float:
+        return self._sdrop
+    
+    @structure_dropout.setter
+    def structure_dropout(self, drop: float):
+        self._sdrop = drop
+    
+    def _separate_heads(self, x: torch.Tensor) -> torch.Tensor:
+        new_x_shape = x.size()[:-1] + (self._num_heads, self._head_channels)
+        x = x.view(*new_x_shape)
+        x = x.permute(0, 2, 1, 3).contiguous()
+        
+        return x
+    
+    def _group_heads(self, x: torch.Tensor) -> torch.Tensor:
+        N, _, L, _ = x.shape
+        # (N, L, num_heads, C_head)
+        x = x.permute(0, 2, 1, 3).contiguous()
+        # (N, L, C_out)
+        x = x.view(N, L, -1)
+        
+        return x
+        
+    def _apply_convolution(self, x: torch.Tensor, conv: nn.Conv2d) -> torch.Tensor:
+        # (N, C_head, num_heads, L)
+        x = x.permute(0, 3, 1, 2).contiguous()
+        # (N, C_conv, num_heads, L)
+        x = conv(x)
+        # (N, num_heads, L, C_conv)
+        x = x.permute(0, 2, 3, 1).contiguous()
+        
+        return x
+    
+    def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
+        
+        # (N, L, C_out)
+        queries: torch.Tensor = self.query(x_q)
+        queries = self._fdrop(queries)
+        # (N, num_heads, L, C_head)
+        queries = self._separate_heads(queries)
+        # (N, num_heads, L, 1)
+        query_score = self._apply_convolution(queries, self.query_att) / (math.sqrt(self._head_channels))
+        # (N, num_heads, 1, L)
+        query_score = query_score.transpose(-2, -1)
+        # (N, num_heads, 1, L)
+        query_weight = self.softmax(query_score)
+        # (N, num_heads, 1, C_head)
+        pooled_query = torch.matmul(query_weight, queries)
+        
+        # (N, L, C_out)
+        keys = self.key(x_kv)
+        keys = self._fdrop(keys)
+        # (N, num_heads, L, C_head)
+        keys = self._separate_heads(keys)  
+        # (N, num_heads, L, C_head)
+        keys_queries = keys * pooled_query
+        # (N, num_heads, L, 1)
+        keys_score = self._apply_convolution(keys_queries, self.key_att) / math.sqrt(self._head_channels)
+        # (N, num_heads, 1, L)
+        keys_score = keys_score.transpose(-2, -1)
+        # (N, num_head, 1, L)
+        keys_weight = self.softmax(keys_score)
+        # (N, num_head, 1, C_head)
+        pooled_key = torch.matmul(keys_weight, keys)
+        
+        # (N, L, C_out)
+        values = self.value(x_kv)
+        values = self._fdrop(values)
+        # (N, num_heads, L, C_head)
+        values = self._separate_heads(values)
+        # (N, num_heads, L, C_head)
+        keys_values = values * pooled_key
+        # (N, num_heads, L, C_head)
+        keys_values = self._apply_convolution(keys_values, self.transform)
+        # (N, num_heads, L, C_head)
+        output = keys_values + queries
+        
+        if self.training:
+            # (N, num_heads)
+            prob = torch.tensor([[1 - self._sdrop]]).expand(output.shape[:2]).to(output.device)
+            # (N, num_heads)
+            binary_mask = torch.bernoulli(prob)
+            # (N, 1, 1, 1)
+            factor = torch.sum(binary_mask, dim=-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            # (N, num_heads, 1, 1)
+            binary_mask = binary_mask.unsqueeze(-1).unsqueeze(-1)
+            # (N, num_heads, L, C_heads)
+            mask = binary_mask.expand(output.shape)
+        
+            # (N, num_heads, L, C_heads)
+            output = output * mask
+            # (N, num_heads, L, C_heads)
+            output = output / factor
+        
+        # (N, L, C_out)
+        output = self._group_heads(output)
+        # (N, L, C_out)
+        output = self.proj(output)
         
         return output
 #''' 

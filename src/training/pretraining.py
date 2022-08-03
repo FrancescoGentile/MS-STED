@@ -24,6 +24,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torchmetrics
 
+from ..model.dropout import StructureDropoutScheduler
 from ..model.embeddings import Embeddings
 from ..model.model import Decoder, Discriminator, Encoder, Reconstructor, ReconstructorDiscriminatorModel
 from ..dataset.dataset import Dataset
@@ -50,6 +51,7 @@ class PretrainingProcessor:
         self._set_model(skeleton, train_dataset.channels)
         self._set_optimizer()
         self._set_lr_scheduler()
+        self._set_dropout_scheduler()
         self._init_metrics_file()
         self._set_metrics()
         
@@ -209,6 +211,14 @@ class PretrainingProcessor:
             self._logger.info('Successfully loaded lr scheduler state from checkpoint')
         
         self._lr_scheduler = lr_scheduler
+    
+    def _set_dropout_scheduler(self):
+        num_steps = (len(self._train_loader) // self._config.accumulation_steps) * self._config.num_epochs
+        self._dropout_scheduler = StructureDropoutScheduler(
+            modules=self._model.modules(),
+            p=self._config.model._structure_dropout,
+            num_steps=num_steps
+        )
         
     def _init_metrics_file(self):
         with open(self._config.metrics_file, 'w', newline='') as f:
@@ -345,6 +355,7 @@ class PretrainingProcessor:
                 self._optimizer.zero_grad()
             
                 self._lr_scheduler.step(after_batch=True)
+                self._dropout_scheduler.step()
             
             with torch.no_grad():
                 discriminated = torch.sigmoid(discriminated)
@@ -356,7 +367,7 @@ class PretrainingProcessor:
         # Computing time metrics
         end_time = timer()
         time = end_time - start_time
-        num_samples = len(self._train_loader) * self._train_loader.batch_size
+        num_samples = len(self._train_loader) * self._train_loader.batch_size * self._config.distributed.world_size
         speed = (num_samples / time) / self._config.distributed.world_size
         
         # Log metrics
@@ -401,7 +412,7 @@ class PretrainingProcessor:
         # Computing time metrics
         end_time = timer()
         time = end_time - start_time
-        num_samples = len(self._eval_loader) * self._eval_loader.batch_size
+        num_samples = len(self._eval_loader) * self._eval_loader.batch_size * self._config.distributed.world_size
         speed = (num_samples / time) / self._config.distributed.world_size
         
         # Log metrics

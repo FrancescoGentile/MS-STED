@@ -2,6 +2,9 @@
 ##
 ##
 
+sublayer_dropout: 0.2
+feature_dropout: 0.1
+structure_dropout: 0.2
 embeddings:
   temporal_channels: 64
   type_channels: 5
