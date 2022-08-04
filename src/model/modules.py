@@ -320,13 +320,13 @@ class SpatioTemporalAttention(nn.Module):
         
         # Layers
         self.query = nn.Linear(config.in_channels, config.out_channels)
-        self.query_att = nn.Conv2d(self._head_channels, 1, kernel_size=1)
+        self.query_att = nn.Linear(self._head_channels, 1)
         
         self.key = nn.Linear(config.in_channels, config.out_channels)
-        self.key_att = nn.Conv2d(self._head_channels, 1, kernel_size=1)
+        self.key_att = nn.Linear(self._head_channels, 1)
         
         self.value = nn.Linear(config.in_channels, config.out_channels)
-        self.transform = nn.Conv2d(self._head_channels, self._head_channels, kernel_size=1)
+        self.transform = nn.Linear(self._head_channels, self._head_channels)
         
         self.proj = nn.Linear(config.out_channels, config.out_channels)
         
@@ -355,16 +355,6 @@ class SpatioTemporalAttention(nn.Module):
         x = x.view(N, L, -1)
         
         return x
-        
-    def _apply_convolution(self, x: torch.Tensor, conv: nn.Conv2d) -> torch.Tensor:
-        # (N, C_head, num_heads, L)
-        x = x.permute(0, 3, 1, 2).contiguous()
-        # (N, C_conv, num_heads, L)
-        x = conv(x)
-        # (N, num_heads, L, C_conv)
-        x = x.permute(0, 2, 3, 1).contiguous()
-        
-        return x
     
     def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
         
@@ -374,7 +364,7 @@ class SpatioTemporalAttention(nn.Module):
         # (N, num_heads, L, C_head)
         queries = self._separate_heads(queries)
         # (N, num_heads, L, 1)
-        query_score = self._apply_convolution(queries, self.query_att) / (math.sqrt(self._head_channels))
+        query_score = self.query_att(queries) / (math.sqrt(self._head_channels))
         # (N, num_heads, 1, L)
         query_score = query_score.transpose(-2, -1)
         # (N, num_heads, 1, L)
@@ -390,7 +380,7 @@ class SpatioTemporalAttention(nn.Module):
         # (N, num_heads, L, C_head)
         keys_queries = keys * pooled_query
         # (N, num_heads, L, 1)
-        keys_score = self._apply_convolution(keys_queries, self.key_att) / math.sqrt(self._head_channels)
+        keys_score = self.key_att(keys_queries) / math.sqrt(self._head_channels)
         # (N, num_heads, 1, L)
         keys_score = keys_score.transpose(-2, -1)
         # (N, num_head, 1, L)
@@ -406,31 +396,36 @@ class SpatioTemporalAttention(nn.Module):
         # (N, num_heads, L, C_head)
         keys_values = values * pooled_key
         # (N, num_heads, L, C_head)
-        keys_values = self._apply_convolution(keys_values, self.transform)
+        keys_values = self.transform(keys_values)
         # (N, num_heads, L, C_head)
         output = keys_values + queries
         
         if self.training:
             # (N, num_heads)
-            prob = torch.tensor([[1 - self._sdrop]]).expand(output.shape[:2]).to(output.device)
+            prob = torch.tensor([[1 - self._sdrop]], device=output.device).expand(output.shape[:2])
             # (N, num_heads)
-            binary_mask = torch.bernoulli(prob)
-            # (N, 1, 1, 1)
-            factor = torch.sum(binary_mask, dim=-1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            epsilon = torch.bernoulli(prob)
             # (N, num_heads, 1, 1)
-            binary_mask = binary_mask.unsqueeze(-1).unsqueeze(-1)
+            binary_mask = epsilon.unsqueeze(-1).unsqueeze(-1)
             # (N, num_heads, L, C_heads)
             mask = binary_mask.expand(output.shape)
-        
             # (N, num_heads, L, C_heads)
             output = output * mask
-            # (N, num_heads, L, C_heads)
-            output = output / factor
         
         # (N, L, C_out)
         output = self._group_heads(output)
         # (N, L, C_out)
         output = self.proj(output)
+        
+        if self.training:
+            # (N)
+            factor = torch.sum(epsilon, dim=-1)
+            # (N, 1, 1)
+            factor = factor.unsqueeze(-1).unsqueeze(-1)
+            factor = factor / self._num_heads
+            factor[factor == 0] = 1
+            # (N, L, C_out)
+            output = output / factor
         
         return output
 #''' 
