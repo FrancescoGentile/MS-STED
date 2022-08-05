@@ -333,8 +333,13 @@ class ClassificationProcessor:
         
         before_epoch_lr_rate = self._lr_scheduler.get_lr()
         
+        counter = tqdm(
+            desc=f'train-epoch-{epoch}', 
+            total=len(self._train_loader) // self._config.accumulation_steps,
+            dynamic_ncols=True)
+        
         start_time = timer()
-        for idx, (j, b, y) in enumerate(tqdm(self._train_loader)):
+        for idx, (j, b, y) in enumerate(self._train_loader):
             
             j: torch.Tensor = j.float().to(self._device)
             b: torch.Tensor = b.float().to(self._device)
@@ -357,12 +362,14 @@ class ClassificationProcessor:
             
                 self._lr_scheduler.step(after_batch=True)
                 self._dropout_scheduler.step()
+                counter.update(1)
         
         self._lr_scheduler.step(after_batch=False)
         after_epoch_lr_rate = self._lr_scheduler.get_lr()
         
         # Computing time metrics
         end_time = timer()
+        counter.close()
         time = end_time - start_time
         num_samples = len(self._train_loader) * self._train_loader.batch_size * self._config.distributed.world_size
         speed = (num_samples / time) / self._config.distributed.world_size
@@ -374,9 +381,14 @@ class ClassificationProcessor:
     def _eval(self, epoch: int) -> float:
         self._model.eval()
         
+        counter = tqdm(
+            desc=f'eval-epoch-{epoch}', 
+            total=len(self._eval_loader) // self._config.accumulation_steps,
+            dynamic_ncols=True)
+        
         with torch.no_grad():
             start_time = timer()
-            for j, b, y in tqdm(self._eval_loader):
+            for idx, (j, b, y) in enumerate(self._eval_loader):
                 j: torch.Tensor = j.float().to(self._device)
                 b: torch.Tensor = b.float().to(self._device)
                 y: torch.Tensor = y.long().to(self._device)
@@ -385,9 +397,13 @@ class ClassificationProcessor:
                 with torch.cuda.amp.autocast():
                     logits = self._model(j, b)
                     _ = self._eval_metrics(logits, y)
+                
+                if (idx + 1) % self._config.accumulation_steps == 0:
+                    counter.update(1)
         
         # Computing time metrics
         end_time = timer()
+        counter.close()
         time = end_time - start_time
         num_samples = len(self._eval_loader) * self._eval_loader.batch_size * self._config.distributed.world_size
         speed = (num_samples / time) / self._config.distributed.world_size

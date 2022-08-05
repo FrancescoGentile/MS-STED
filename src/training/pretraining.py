@@ -319,8 +319,13 @@ class PretrainingProcessor:
         
         before_epoch_lr_rate = self._lr_scheduler.get_lr()
         
+        counter = tqdm(
+            desc=f'train-epoch-{epoch}', 
+            total=len(self._train_loader) // self._config.accumulation_steps,
+            dynamic_ncols=True)
+        
         start_time = timer()
-        for idx, (jm, jo, jc, bm, bo, bc) in enumerate(tqdm(self._train_loader)):
+        for idx, (jm, jo, jc, bm, bo, bc) in enumerate(self._train_loader):
             
             jm: torch.Tensor = jm.float().to(self._device)
             jo: torch.Tensor = jo.float().to(self._device)
@@ -358,6 +363,7 @@ class PretrainingProcessor:
             
                 self._lr_scheduler.step(after_batch=True)
                 self._dropout_scheduler.step()
+                counter.update(1)
             
             with torch.no_grad():
                 discriminated = torch.sigmoid(discriminated)
@@ -368,6 +374,7 @@ class PretrainingProcessor:
         
         # Computing time metrics
         end_time = timer()
+        counter.close()
         time = end_time - start_time
         num_samples = len(self._train_loader) * self._train_loader.batch_size * self._config.distributed.world_size
         speed = (num_samples / time) / self._config.distributed.world_size
@@ -380,9 +387,14 @@ class PretrainingProcessor:
     def _eval(self, epoch: int) -> Tuple[float, float]:
         self._model.eval()
         
+        counter = tqdm(
+            desc=f'eval-epoch-{epoch}', 
+            total=len(self._eval_loader) // self._config.accumulation_steps,
+            dynamic_ncols=True)
+        
         with torch.no_grad():
             start_time = timer()
-            for jm, jo, jc, bm, bo, bc in tqdm(self._eval_loader):
+            for idx, (jm, jo, jc, bm, bo, bc) in enumerate(self._eval_loader):
             
                 jm: torch.Tensor = jm.float().to(self._device)
                 jo: torch.Tensor = jo.float().to(self._device)
@@ -407,12 +419,16 @@ class PretrainingProcessor:
                     rloss = self._eval_metrics['recon_loss'](reconstructed, original)
                     dloss = self._eval_metrics['disc_loss'](discriminated, changed.float())
                     total_loss = self._eval_metrics['total_loss'](rloss, dloss)
+                
+                if (idx + 1) % self._config.accumulation_steps == 0:
+                    counter.update(1)
             
                 discriminated = torch.sigmoid(discriminated)
                 self._eval_metrics['disc_acc'](discriminated, changed)
                 
         # Computing time metrics
         end_time = timer()
+        counter.close()
         time = end_time - start_time
         num_samples = len(self._eval_loader) * self._eval_loader.batch_size * self._config.distributed.world_size
         speed = (num_samples / time) / self._config.distributed.world_size
