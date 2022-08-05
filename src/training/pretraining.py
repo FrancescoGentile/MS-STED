@@ -158,8 +158,8 @@ class PretrainingProcessor:
         embeddings = Embeddings(self._config.model.embeddings, channels, skeleton)
         encoder = Encoder(self._config.model.encoder, True)
         decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
-        reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels)
-        discriminator = Discriminator(self._config.model.decoder.out_channels)
+        reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels, self._config.model.feature_dropout)
+        discriminator = Discriminator(self._config.model.decoder.out_channels, self._config.model.feature_dropout)
         model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)
         
         self._logger.info(f'Model: {self._config.model.name}')
@@ -299,6 +299,8 @@ class PretrainingProcessor:
         
         # Add metrics to wandb
         if self._config.distributed.is_master():
+            if lr is not None:
+                wandb.log({'classification/train/learning_rate': lr[0]}, commit=False)
             wandb.log({
                 f'pretrain/{prefix}/epoch': epoch,
                 f'pretrain/{prefix}/reconstruction_loss': recon_loss,

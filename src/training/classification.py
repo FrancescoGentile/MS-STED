@@ -163,7 +163,7 @@ class ClassificationProcessor:
             state_dict = torch.load(self._config.pretrain_weights, map_location=self._device)
             model.load_state_dict(state_dict)
         
-        classifier = Classifier(self._config.model.encoder.out_channels, num_classes) 
+        classifier = Classifier(self._config.model.encoder.out_channels, num_classes, self._config.model.feature_dropout) 
         model = ClassificationModel(embeddings, encoder, classifier)
         
         self._logger.info(f'Model: {self._config.model.name}')
@@ -311,6 +311,8 @@ class ClassificationProcessor:
         
         # Add metrics to wandb
         if self._config.distributed.is_master():
+            if lr is not None:
+                wandb.log({'classification/train/learning_rate': lr[0]}, commit=False)
             wandb.log({
                 f'classification/{prefix}/epoch': epoch,
                 f'classification/{prefix}/loss': loss,
@@ -318,7 +320,7 @@ class ClassificationProcessor:
                 f'classification/{prefix}/top5_acc': top5_acc,
                 f'classification/{prefix}/precision': precision,
                 f'classification/{prefix}/recall': recall,
-                f'classification/{prefix}/f1_score': f1_score})
+                f'classification/{prefix}/f1_score': f1_score}, commit=True)
         
         # Add metrics to file
         with open(self._config.metrics_file, mode='a', newline='') as f:

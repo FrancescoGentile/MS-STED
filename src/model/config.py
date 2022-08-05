@@ -85,6 +85,10 @@ class ModelConfig:
     @property
     def decoder(self) -> DecoderConfig:
         return self._decoder
+    
+    @property
+    def feature_dropout(self) -> float:
+        return self._feature_dropout
 
 # Configuration for embeddings
 class EmbeddingsConfig:
