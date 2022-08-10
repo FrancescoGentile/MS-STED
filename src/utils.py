@@ -31,10 +31,10 @@ def load_config_file(path: str) -> dict:
             options = yaml.safe_load(f)
     except:
         raise(f'An error occurred while trying to read config file.')
+    
+    config = DefaultMunch.fromDict(options, default=None)
         
-    options = DefaultMunch.fromDict(options, default=None)
-        
-    return options
+    return config
 
 def init_logging():
     logger = logging.getLogger()

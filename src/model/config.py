@@ -30,24 +30,19 @@ class ModelConfig:
         
         if model_cfg.encoder is None:
             raise ValueError('Missing encoder field in model config')
-        self._encoder = EncoderConfig(
-            model_cfg.encoder, 
-            self._feature_dropout,
-            self._sublayer_dropout)
+        model_cfg.encoder.feature_dropout = self._feature_dropout
+        model_cfg.encoder.sublayer_dropout = self._sublayer_dropout
+        self._encoder = EncoderConfig(model_cfg.encoder)
         
         if model_cfg.decoder is None:
             raise ValueError('Missing decoder field in model config')
-        self._decoder = DecoderConfig(
-            model_cfg.decoder,
-            len(self.encoder.blocks),
-            self._feature_dropout,
-            self._sublayer_dropout)
+        model_cfg.decoder.feature_dropout = self._feature_dropout
+        model_cfg.decoder.sublayer_dropout = self._sublayer_dropout
+        self._decoder = DecoderConfig(model_cfg.decoder, self._encoder)
         
         if model_cfg.embeddings is None:
             raise ValueError('Missing embeddings field in model config')
-        self._embeddings = EmbeddingsConfig(
-            model_cfg.embeddings, 
-            out_channels=self.encoder.in_channels)
+        self._embeddings = EmbeddingsConfig(model_cfg.embeddings, self._encoder)
         
     def to_dict(self, architecture: bool) -> dict:
         """_summary_
@@ -92,8 +87,8 @@ class ModelConfig:
 
 # Configuration for embeddings
 class EmbeddingsConfig:
-    def __init__(self, cfg: dict, out_channels: int) -> None:
-        self._out_channels = out_channels
+    def __init__(self, cfg: dict, encoder: EncoderConfig) -> None:
+        self._out_channels = encoder.in_channels
         
         self._temporal_channels = cfg.temporal_channels
         if cfg.temporal_channels is None:
@@ -109,8 +104,7 @@ class EmbeddingsConfig:
     
     def to_dict(self) -> dict:
         d = {'temporal-channels': self._temporal_channels, 
-             'type-channels': self._type_channels, 
-             'out-channels': self._out_channels}
+             'type-channels': self._type_channels}
         
         return d
     
@@ -128,7 +122,7 @@ class EmbeddingsConfig:
 
 # Configuration for encoder
 class EncoderConfig:
-    def __init__(self, cfg: dict, fdrop: float,sdrop: float) -> None:
+    def __init__(self, cfg: dict) -> None:
         if cfg.blocks is None:
             raise ValueError('Missing blocks field in encoder config')
         elif type(cfg.blocks) != list:
@@ -137,7 +131,11 @@ class EncoderConfig:
         self._blocks: List[BlockConfig] = [None] * len(cfg.blocks)
         out_ch = -1
         for idx, bc in reversed(list(enumerate(cfg.blocks))):
-            block = BlockConfig(bc, out_channels=out_ch, fdrop=fdrop, sdrop=sdrop)
+            bc.feature_dropout = cfg.feature_dropout
+            bc.sublayer_dropout = cfg.sublayer_dropout
+            bc.out_channels = out_ch
+            
+            block = BlockConfig(bc)
             out_ch = block.in_channels
             self._blocks[idx] = block
     
@@ -167,18 +165,22 @@ class EncoderConfig:
 
 # Configuration for decoder
 class DecoderConfig:
-    def __init__(self, cfg: dict, num_block: int, fdrop: float, sdrop: float) -> None:
+    def __init__(self, cfg: dict, encoder: EncoderConfig) -> None:
         if cfg.blocks is None:
             raise ValueError('Missing blocks field in decoder config')
         elif type(cfg.blocks) != list:
             raise ValueError('Blocks field in decoder config must be a list')
-        elif len(cfg.blocks) != num_block:
+        elif len(cfg.blocks) != len(encoder.blocks):
             raise ValueError('The number of decoder blocks must be equal to the number of encoder blocks')
         
         self._blocks: List[BlockConfig] = [None] * len(cfg.blocks)
         out_ch = -1
         for idx, bc in reversed(list(enumerate(cfg.blocks))):
-            block = BlockConfig(bc, out_channels=out_ch, fdrop=fdrop, sdrop=sdrop)
+            bc.feature_dropout = cfg.feature_dropout
+            bc.sublayer_dropout = cfg.sublayer_dropout
+            bc.out_channels = out_ch
+            
+            block = BlockConfig(bc)
             out_ch = block.in_channels
             self._blocks[idx] = block
             
@@ -208,7 +210,7 @@ class DecoderConfig:
 
 # Configuration for a block
 class BlockConfig:
-    def __init__(self, cfg: dict, out_channels: int, fdrop: float, sdrop: float) -> None:
+    def __init__(self, cfg: dict) -> None:
         # Set channels
         if cfg.channels is None:
             raise ValueError('Missing channels field in block config')
@@ -216,7 +218,7 @@ class BlockConfig:
             raise ValueError('Channel field in block config must be an integer')
         
         self._in_channels = cfg.channels
-        self._out_channels = out_channels if out_channels > 0 else cfg.channels
+        self._out_channels = cfg.out_channels if cfg.out_channels > 0 else cfg.channels
         
         # Set layers
         if cfg.layers is None:
@@ -230,11 +232,14 @@ class BlockConfig:
         for idx, lc in enumerate(cfg.layers):
             if idx == len(cfg.layers) - 1:
                 out_ch = self.out_channels
-            self._layers.append(LayerConfig(lc, in_ch, out_ch, fdrop, sdrop))
+            lc.in_channels = in_ch
+            lc.out_channels = out_ch
+            lc.feature_dropout = cfg.feature_dropout
+            lc.sublayer_dropout = cfg.sublayer_dropout
+            self._layers.append(LayerConfig(lc))
             
     def to_dict(self) -> dict:
-        d = {'in-channels': self.in_channels,
-             'out-channels': self.out_channels}
+        d = {'channels': self._in_channels}
         
         layers = []
         for l in self._layers:
@@ -259,10 +264,10 @@ class BlockConfig:
 
 # Configuration for a layer
 class LayerConfig:
-    def __init__(self, cfg: dict, in_channels: int, out_channels: int, fdrop: float, sdrop: float) -> None:
+    def __init__(self, cfg: dict) -> None:
         # Set channels
-        self._in_channels = in_channels
-        self._out_channels = out_channels
+        self._in_channels = cfg.in_channels
+        self._out_channels = cfg.out_channels
         
         # Set cross view
         if cfg.cross_view is None:
@@ -271,6 +276,13 @@ class LayerConfig:
             raise ValueError('Cross-view field in layer config must be a boolean')
         
         self._cross_view = cfg.cross_view
+        self._num_heads = cfg.num_heads
+        if self._num_heads is None:
+            raise ValueError('Missing num-heads field in layer config')
+        elif type(self._num_heads) != int:
+            raise ValueError('Num-heads field in layer config must be an integer')
+        elif self._in_channels % self._num_heads != 0:
+            raise ValueError('Number of heads in a layer must divide the number of input channels')
         
         # Set branches
         if cfg.branches is None:
@@ -278,13 +290,27 @@ class LayerConfig:
         elif type(cfg.branches) != list:
             raise ValueError('Branches field in layer confif must be a list')
         
+        if self._out_channels % len(cfg.branches) != 0:
+            raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
+        
         self._branches: List[LayerConfig] = []
+        last_prod = -1
         for bc in cfg.branches:
-            self._branches.append(BranchConfig(bc, in_channels, in_channels, fdrop, sdrop))
+            bc.channels = self._in_channels
+            bc.num_heads = self._num_heads
+            bc.feature_dropout = cfg.feature_dropout
+            bc.sublayer_dropout = cfg.sublayer_dropout
+            
+            branch = BranchConfig(bc)
+            if branch.window * branch.dilation < last_prod:
+                raise ValueError(f'Branches must be listed in ascending order of size') 
+            else:
+                last_prod = branch.window * branch.dilation
+                self._branches.append(branch)
             
     def to_dict(self) -> dict:
-        d = {'in-channels': self.in_channels,
-             'out-channels': self.out_channels}
+        d = {'cross-view': self._cross_view, 
+             'num-heads': self._num_heads}
         
         branches = []
         for b in self._branches:
@@ -311,19 +337,12 @@ class LayerConfig:
         return self._branches
 
 class BranchConfig:
-    def __init__(self, cfg: dict, in_channels: int, out_channels: int, fdrop: float, sdrop: float) -> None:
+    def __init__(self, cfg: dict) -> None:
         # Set channels
-        self._in_channels = in_channels
-        self._out_channels = out_channels
+        self._channels = cfg.channels
         
         # Set number of heads
         self._num_heads = cfg.num_heads
-        if cfg.num_heads is None:
-            raise ValueError('Missing num-heads field in branch config')
-        elif type(cfg.num_heads) != int:
-            raise ValueError('Num-heads field in branch config must be an integer')
-        elif out_channels % cfg.num_heads != 0:
-            raise ValueError('Number of heads in a branch must divide the number of output channels')
         
         # Set window
         if cfg.window is None:
@@ -341,25 +360,18 @@ class BranchConfig:
         
         self._dilation = cfg.dilation
         
-        self._feature_dropout = fdrop
-        self._sublayer_dropout = sdrop
+        self._feature_dropout = cfg.feature_dropout
+        self._sublayer_dropout = cfg.sublayer_dropout
         
     def to_dict(self) -> dict:
-        d = {'in-channels': self._in_channels,
-             'out-channels': self._out_channels, 
-             'window': self._window,
-             'dilation': self._dilation,
-             'num-heads': self._num_heads}
+        d = {'window': self._window,
+             'dilation': self._dilation}
         
         return d
         
     @property
-    def in_channels(self) -> int:
-        return self._in_channels
-    
-    @property
-    def out_channels(self) -> int:
-        return self._out_channels
+    def channels(self) -> int:
+        return self._channels
     
     @property
     def num_heads(self) -> int:

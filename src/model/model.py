@@ -53,7 +53,7 @@ class Classifier(nn.Module):
     def __init__(self, 
                  in_channels: int,
                  num_classes: int,
-                 dropout: float = 0.1) -> None:
+                 dropout: float) -> None:
         super().__init__()
         
         self.dropout = nn.Dropout(dropout)
@@ -98,7 +98,6 @@ class ClassificationModel(nn.Module):
         
         return output
 
-# Pretraining
 
 class Decoder(nn.Module):
     def __init__(self, dconfig: DecoderConfig, econfig: EncoderConfig) -> None:

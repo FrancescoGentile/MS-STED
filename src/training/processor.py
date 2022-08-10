@@ -20,7 +20,9 @@ class TrainingProcessor:
             level=logging.INFO, 
             file=config.log_file, 
             local_master=config.distributed.is_local_master())
-        self._writer = SummaryWriter(log_dir=self._config.log_dir)
+        
+        if self._config.distributed.is_local_master():
+            self._writer = SummaryWriter(log_dir=self._config.log_dir)
     
     def _pretrain(self):
         if self._config.process_pretraining:
@@ -65,26 +67,30 @@ class TrainingProcessor:
                 raise e
     
     def _save_config(self):
-        with open(self._config.config_file, 'w', newline='') as f:
-            yaml.dump(self._config.to_dict(), f, default_flow_style=False, sort_keys=False, Dumper=utils.NoAliasDumper)
+        if self._config.distributed.is_local_master():
+            with open(self._config.config_file, 'w', newline='') as f:
+                yaml.dump(self._config.to_dict(), f, default_flow_style=False, sort_keys=False, Dumper=utils.NoAliasDumper)
             
-        with open(self._config.model_file, 'w', newline='') as f:
-            yaml.safe_dump(self._config.model.to_dict(True), f, default_flow_style=False, sort_keys=False)
+            with open(self._config.model_file, 'w', newline='') as f:
+                yaml.safe_dump(self._config.model.to_dict(True), f, default_flow_style=False, sort_keys=False)
     
     def start(self):
-        run = wandb.init(
-            job_type='training',
-            dir=self._config.log_dir,
-            config=self._config.to_dict(),
-            project='Skeleton-based Action Recognition',
-            reinit=True,
-            tags=['skeleton', 'pretrain', 'action-recognition'])
+        if self._config.distributed.is_master():
+            run = wandb.init(
+                job_type='training',
+                dir=self._config.log_dir,
+                config=self._config.to_dict(architecture=True),
+                project='Skeleton-based Action Recognition',
+                tags=['skeleton', 'action-recognition'],
+                reinit=True,
+                resume=True)
         
-        with run:
-            if self._config.distributed.is_local_master():
-                self._save_config()
+        self._save_config()
                 
-            self._pretrain()
-            self._classification()
+        self._pretrain()
+        self._classification()
         
-        self._writer.close()
+        if self._config.distributed.is_local_master():
+            self._writer.close()
+        if self._config.distributed.is_master():
+            run.finish()

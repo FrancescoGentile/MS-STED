@@ -20,7 +20,7 @@ class LRSchedulerConfig:
         
         self._step_after_batch = False
         if cfg.step_after_batch is not None:
-            self._step_after_batch = cfg.after_batch
+            self._step_after_batch = cfg.step_after_batch
             
         self._args: dict = cfg.args.toDict() if cfg.args is not None else {}
         
@@ -82,7 +82,7 @@ class PyTorchLRScheduler(LRScheduler):
         self._scheduler: _LRScheduler = cls(optimizer, **config.args)
     
     def get_lr(self) -> float:
-        return self._scheduler.get_lr()
+        return self._scheduler.get_last_lr()[-1]
     
     def step(self, after_batch: bool):
         if self._config.step_after_batch and after_batch:

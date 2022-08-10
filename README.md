@@ -62,4 +62,4 @@ The order of execution is always the same: dataset generation - training - test.
 
 2. If an error occurs, you can add the ```--debug``` option so that the full stack trace will be added to the log. 
 
-3. At the time of writing, if you want to resume a training, you need to use at least pytorch 1.13 (nightly release) because of a problem in the current stable release (1.12). This problem should be solved with the minor update 1.12.1 that is not available at the moment.
+3. At the time of writing (08/2022), if you want to resume a training, you need to use at least pytorch 1.13 (nightly release) because of a problem in the current stable release (1.12).

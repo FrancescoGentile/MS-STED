@@ -14,11 +14,12 @@ from ..dataset.skeleton import SkeletonGraph
 
 class Embeddings(nn.Module):
     
-    def __init__(self, config: EmbeddingsConfig, in_channels: int, skeleton: SkeletonGraph) -> None:
+    def __init__(self, config: EmbeddingsConfig, in_channels: int, max_len: int, skeleton: SkeletonGraph) -> None:
         super().__init__()
         
         self._in_channels = in_channels
         self._out_channels = config.out_channels
+        self._temporal_channels = config.temporal_channels
         self._skeleton = skeleton
         
         id_embed, id_embed_channels = self._get_id_embeddings()
@@ -32,14 +33,11 @@ class Embeddings(nn.Module):
         
         self.register_buffer(
             'temporal_enc', 
-            self._get_temporal_encoding(config.temporal_channels), 
+            self._get_temporal_encoding(max_len, config.temporal_channels), 
             persistent=False)
         
         total_channels = in_channels + self._type_channels + 2 * self._id_channels + config.temporal_channels
         self.embed_proj = nn.Conv2d(total_channels, config.out_channels, kernel_size=1)
-        
-        #self.norm = nn.BatchNorm2d(config.out_channels)
-        #self.dropout = nn.Dropout(p=0.1)
     
     def _get_id_embeddings(self) -> Tuple[torch.Tensor, int]:
         laplacian = self._skeleton.laplacian_matrix
@@ -62,10 +60,10 @@ class Embeddings(nn.Module):
         
         return joint_embed, bone_embed
 
-    def _get_temporal_encoding(self, temporal_channels: int) -> torch.Tensor:
-        te = torch.zeros(temporal_channels, self._out_channels)
-        position = torch.arange(0, temporal_channels, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, self._out_channels, 2).float() * (-math.log(10000.0) / self._out_channels))
+    def _get_temporal_encoding(self, max_len: int, temporal_channels: int) -> torch.Tensor:
+        te = torch.zeros(max_len, temporal_channels)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, temporal_channels, 2).float() * (-math.log(10000.0) / temporal_channels))
         te[:, 0::2] = torch.sin(position * div_term)
         te[:, 1::2] = torch.cos(position * div_term)
         
@@ -78,7 +76,7 @@ class Embeddings(nn.Module):
                 joints: torch.Tensor,
                 bones: torch.Tensor) -> torch.Tensor:
         
-        N, C, T, V = joints.shape
+        N, _, T, V = joints.shape
         
         if self.training:
             # (V)
@@ -93,7 +91,7 @@ class Embeddings(nn.Module):
         
         ide = id_embeddings.expand(N, self._id_channels, T, V)
         te = self.temporal_enc[:, :, :T, :]
-        te = te.expand(N, self._out_channels, T, V)
+        te = te.expand(N, self._temporal_channels, T, V)
         
         # joints
         je = self.joint_embeddings.expand(N, self._type_channels, T, V)
@@ -106,11 +104,9 @@ class Embeddings(nn.Module):
         be = self.bone_embeddings.expand(N, self._type_channels, T, V)
         b = torch.cat([bones, first, second, be, te], dim=1)
         
-        # projection -> batch norm -> dropout
+        # projection
         concat = torch.cat([j, b], dim=-1)
         output = self.embed_proj(concat)
-        #output = self.norm(output)
-        #output = self.dropout(output)
         
         return output
         
