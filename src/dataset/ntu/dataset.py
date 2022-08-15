@@ -4,7 +4,7 @@
 
 import os
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 import numpy as np
 import yaml
 
@@ -28,7 +28,6 @@ class NTUDataset(Dataset):
         
         phase = 'train' if train_set else 'test'
         self._load_data(phase)
-        self._parse_mean_std(phase)
         
         self._pretrain = pretrain
     
@@ -36,44 +35,18 @@ class NTUDataset(Dataset):
         path = self._config.dataset_path
         data_path = os.path.join(path, f'{phase}_data.npy')
         labels_path = os.path.join(path, f'{phase}_labels.npy')
+        mean_std_path = os.path.join(path, f'{phase}_mean_std.npz')
 
         self._data = np.load(data_path, mmap_mode='r')
         self._labels = np.load(labels_path, mmap_mode='r')
+        
+        mean_std = np.load(mean_std_path)
+        self._mean = mean_std['mean']
+        self._std = mean_std['std']
 
         if self._config.debug: 
             self._data = self._data[:64]
             self._labels = self._labels[:64]
-    
-    def _parse_mean_std(self, phase: str):
-        if not self._config.normalize:
-            return
-        
-        mean_std_path = os.path.join(self._config._dataset_path, f'{phase}_mean_std.yaml')
-        
-        with open(mean_std_path, 'r') as f:
-            mean_std = yaml.safe_load(f)
-        
-        # joints
-        joints_mean = []
-        joints_std = []
-        for type in ['coordinate', 'velocity', 'distance']:
-            for c in ['x', 'y', 'z']:
-                joints_mean.append(mean_std['joints'][c][type]['mean'])
-                joints_std.append(mean_std['joints'][c][type]['std'])
-        
-        self._jmean = np.reshape(np.array(joints_mean), newshape=(9, 1, 1, 1))
-        self._jstd = np.reshape(np.array(joints_std), newshape=(9, 1, 1, 1))
-        
-        # bones
-        bones_mean = []
-        bones_std = []
-        for type in ['coordinate', 'velocity', 'angle']:
-            for c in ['x', 'y', 'z']:
-                bones_mean.append(mean_std['bones'][c][type]['mean'])
-                bones_std.append(mean_std['bones'][c][type]['std'])
-        
-        self._bmean = np.reshape(np.array(bones_mean), newshape=(9, 1, 1, 1))
-        self._bstd = np.reshape(np.array(bones_std), newshape=(9, 1, 1, 1))
     
     def __len__(self): 
         return len(self._labels)
@@ -127,7 +100,10 @@ class NTUDataset(Dataset):
     
         return x, changed
     
-    def _get_joints_bone(self, data: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _get_joints_bone(self, data: np.ndarray, scale: Optional[np.ndarray], rot: Optional[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+        if self._config.normalize:
+            data = (data - self._mean) / self._std
+        
         C, T, V, M = data.shape
         B = len(self._skeleton.joints_connections)
         joints = np.zeros((C * 3, T, V, M))
@@ -148,27 +124,30 @@ class NTUDataset(Dataset):
         bone_length = np.sqrt(bone_length) + 0.0001
         for c in range(C):
             bones[C*2+c] = np.arccos(bones[c] / bone_length)
-            
-        if self._config.normalize:
-            joints = (joints - self._jmean) / self._jstd
-            bones = (bones - self._bmean) / self._bstd
         
         return joints, bones
 
     def __getitem__(self, index: int):
+        random_scale = None
+        random_rot = None
+        if self._config.scale is not None:
+            random_scale = np.random.uniform(-self._config.scale, self._config.scale, 3)
+        if self._config.rotation:
+            random_rot = np.random.uniform(-self._config.rotation, self._config.rotation, 3)
         
         if self._pretrain:
             data, jc = self._get_transformed(index)
+            
             bc = np.logical_or(
                 jc[:, self._skeleton.joints_connections[:, 0]], 
                 jc[:, self._skeleton.joints_connections[:, 1]])
 
-            jm, bm = self._get_joints_bone(data)
-            jo, bo = self._get_joints_bone(self._data[index])
+            jm, bm = self._get_joints_bone(data, random_scale, random_rot)
+            jo, bo = self._get_joints_bone(self._data[index], random_scale, random_rot)
             
             return jm, jo, jc, bm, bo, bc
         else:
-            joints, bones = self._get_joints_bone(self._data[index])
+            joints, bones = self._get_joints_bone(self._data[index], random_scale, random_rot)
             label = self._labels[index]
             
             return joints, bones, label

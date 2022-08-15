@@ -143,6 +143,14 @@ class NTUDatasetConfig(DatasetConfig):
         return self._shuffle_length
     
     @property
+    def scale(self) -> Optional[float]:
+        return None
+    
+    @property
+    def rotation(self) -> Optional[float]:
+        return None
+    
+    @property
     def seed(self) -> int:
         return self._seed
     
