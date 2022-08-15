@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 from typing import List
+from enum import Enum
 
 from .. import utils
 
@@ -23,6 +24,11 @@ class ModelConfig:
         self._feature_dropout = model_cfg.feature_dropout
         if self._feature_dropout is None:
             self._feature_dropout = 0.0
+        
+        if model_cfg.structure_dropout is not None:
+            self._structure_dropout_start = float(model_cfg.structure_dropout.start)
+            self._structure_dropout_end = float(model_cfg.structure_dropout.end)
+            self._structure_dropout_warmup = int(model_cfg.structure_dropout.warmup)
             
         self._structure_dropout = model_cfg.structure_dropout
         if self._structure_dropout is None:
@@ -45,23 +51,17 @@ class ModelConfig:
         self._embeddings = EmbeddingsConfig(model_cfg.embeddings, self._encoder)
         
     def to_dict(self, architecture: bool) -> dict:
-        """_summary_
-
-        Args:
-            architecture (bool): whether to add the architecture to the dictionary
-
-        Returns:
-            dict: _description_
-        """
         d = {'name': self._name }
         
         if architecture:
-            d['sublayer_dropout'] = self._sublayer_dropout
-            d['feature_dropout'] = self._feature_dropout
-            d['structure_dropout'] = self._structure_dropout
-            d['embeddings'] = self._embeddings.to_dict()
-            d['encoder'] = self._encoder.to_dict()
-            d['decoder'] = self._decoder.to_dict()
+            d.update({
+                'sublayer_dropout': self._sublayer_dropout,
+                'feature_dropout': self._feature_dropout,
+                'structure_dropout': self._structure_dropout,
+                'embeddings': self._embeddings.to_dict(),
+                'encoder': self._encoder.to_dict(),
+                'decoder': self._decoder.to_dict()
+            })
         
         return d
         
@@ -82,8 +82,24 @@ class ModelConfig:
         return self._decoder
     
     @property
+    def sublayer_dropout(self) -> float:
+        return self._sublayer_dropout
+    
+    @property
     def feature_dropout(self) -> float:
         return self._feature_dropout
+    
+    @property
+    def structure_dropout_start(self) -> float:
+        return self._structure_dropout_start
+    
+    @property
+    def structure_dropout_end(self) -> float:
+        return self._structure_dropout_end
+    
+    @property
+    def structure_dropout_warmup(self) -> int:
+        return self._structure_dropout_warmup
 
 # Configuration for embeddings
 class EmbeddingsConfig:
@@ -261,6 +277,10 @@ class BlockConfig:
     def layers(self) -> List[LayerConfig]:
         return self._layers
 
+class CrossViewType(Enum):
+    NONE = 'none',
+    LARGER = 'larger',
+    SMALLER = 'smaller',
 
 # Configuration for a layer
 class LayerConfig:
@@ -271,11 +291,10 @@ class LayerConfig:
         
         # Set cross view
         if cfg.cross_view is None:
-            raise ValueError('Missing cross-view field in layer config')
-        elif type(cfg.cross_view) != bool:
-            raise ValueError('Cross-view field in layer config must be a boolean')
+            self._cross_view = CrossViewType.NONE
+        else:
+            self._cross_view = CrossViewType[cfg.cross_view.upper()]
         
-        self._cross_view = cfg.cross_view
         self._num_heads = cfg.num_heads
         if self._num_heads is None:
             raise ValueError('Missing num-heads field in layer config')
@@ -295,11 +314,16 @@ class LayerConfig:
         
         self._branches: List[LayerConfig] = []
         last_prod = -1
-        for bc in cfg.branches:
+        for idx, bc in enumerate(cfg.branches):
             bc.channels = self._in_channels
             bc.num_heads = self._num_heads
             bc.feature_dropout = cfg.feature_dropout
             bc.sublayer_dropout = cfg.sublayer_dropout
+            if (idx == 0 and self._cross_view == CrossViewType.LARGER) or \
+                (idx == (len(cfg.branches) - 1) and self._cross_view == CrossViewType.SMALLER):
+                bc.cross_view = False
+            else:
+                bc.cross_view = self._cross_view != CrossViewType.NONE
             
             branch = BranchConfig(bc)
             if branch.window * branch.dilation < last_prod:
@@ -307,9 +331,12 @@ class LayerConfig:
             else:
                 last_prod = branch.window * branch.dilation
                 self._branches.append(branch)
+        
+        if len(self._branches) == 1 and self._cross_view != CrossViewType.NONE:
+            raise ValueError(f'A layer containing only one branch cannot be cross-view')
             
     def to_dict(self) -> dict:
-        d = {'cross-view': self._cross_view, 
+        d = {'cross-view': str(self._cross_view), 
              'num-heads': self._num_heads}
         
         branches = []
@@ -329,7 +356,7 @@ class LayerConfig:
         return self._out_channels
         
     @property
-    def cross_view(self) -> bool:
+    def cross_view(self) -> CrossViewType:
         return self._cross_view
     
     @property
@@ -338,11 +365,9 @@ class LayerConfig:
 
 class BranchConfig:
     def __init__(self, cfg: dict) -> None:
-        # Set channels
         self._channels = cfg.channels
-        
-        # Set number of heads
         self._num_heads = cfg.num_heads
+        self._cross_view = cfg.cross_view
         
         # Set window
         if cfg.window is None:
@@ -368,6 +393,10 @@ class BranchConfig:
              'dilation': self._dilation}
         
         return d
+    
+    @property
+    def cross_view(self) -> bool:
+        return self._cross_view
         
     @property
     def channels(self) -> int:
@@ -392,3 +421,7 @@ class BranchConfig:
     @property
     def sublayer_dropout(self) -> float:
         return self._sublayer_dropout
+    
+    @property
+    def structure_dropout(self)-> float:
+        return 0.0 # it will be overwritten by the scheduler

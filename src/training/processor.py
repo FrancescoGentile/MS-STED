@@ -21,8 +21,9 @@ class TrainingProcessor:
             file=config.log_file, 
             local_master=config.distributed.is_local_master())
         
+        self._writer = None
         if self._config.distributed.is_local_master():
-            self._writer = SummaryWriter(log_dir=self._config.log_dir)
+            self._writer = SummaryWriter(log_dir=self._config.log_dir)        
     
     def _pretrain(self):
         if self._config.process_pretraining:

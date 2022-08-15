@@ -8,8 +8,46 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
-from .config import BlockConfig, LayerConfig, BranchConfig
+from .config import BlockConfig, CrossViewType, LayerConfig, BranchConfig
+
+
+class AttentionPool(nn.Module):
+    def __init__(self, k: int, channels: int, num_heads: int = 8) -> None:
+        super().__init__()
+        assert channels % num_heads == 0, 'Channels must be 0 modulo number of heads.'
+        
+        self._num_heads = num_heads
+        self._k = k
+        self.qk_proj = nn.Linear(channels, channels * 2)
+        
+    def forward(self, x: torch.Tensor):
+        N, C, T, V = x.shape
+        new_t = math.ceil(T / self._k)
+        
+        xn = x.permute(0, 2, 1, 3).contiguous().mean(-1)
+        qk: torch.Tensor = self.qk_proj(xn)
+        qk = qk.view(N, T, self._num_heads, -1)
+        qk = qk.permute(0, 2, 1, 3).contiguous()
+        q, k = torch.chunk(qk, 2, dim=-1)
+        
+        att = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
+        att = torch.mean(att, dim=1)
+        scores = torch.mean(att, dim=-1)
+        values, idx = torch.topk(scores, k=new_t, dim=-1)
+        
+        idx = idx[:, None, :, None]
+        idx = idx.expand(N, C, new_t, V)
+        
+        values = torch.sigmoid(values)
+        values = values[:, None, :, None]
+        values = values.expand(N, C, new_t, V)
+        
+        out = torch.gather(x, 2, idx)
+        out *= values
+        
+        return out
 
 class Block(nn.Module):
     
@@ -34,38 +72,47 @@ class Layer(nn.Module):
         
         self._cross_view = config.cross_view
         
+        att_network = AttentionBranch.generate_dict(
+            cross_view=self._cross_view != CrossViewType.NONE,
+            config=config.branches[0]
+        )
         self.branches = nn.ModuleList()
-        attention = SpatioTemporalAttention(config.branches[0])
         for branch_cfg in config.branches:
+            attention = AttentionBranch(branch_cfg, att_network)
             self.branches.append(Branch(branch_cfg, attention))
             
         self.proj = nn.Conv2d(
             in_channels=config.in_channels, 
             out_channels=config.out_channels // len(self.branches), 
             kernel_size=1)
+        
+        if config.in_channels == config.out_channels:
+            self.residual = nn.Identity()
+        else:
+            self.residual = nn.Conv2d(config.in_channels, config.out_channels, kernel_size=1)
     
-    def _ascending(self, x: torch.Tensor) -> torch.Tensor:
+    def _larger(self, x: torch.Tensor, cross_view: bool) -> torch.Tensor:
         outputs = [None] * len(self.branches)
         cross_x = None 
         for idx, branch in enumerate(self.branches):
             out = branch(x, cross_x)
             outputs[idx] = self.proj(out)
             
-            if self._cross_view:
+            if cross_view:
                 cross_x = out
 
         output = torch.cat(outputs, dim=1)
         
         return output
     
-    def _descending(self, x: torch.Tensor) -> torch.Tensor:
+    def _smaller(self, x: torch.Tensor, cross_view: bool) -> torch.Tensor:
         outputs = [None] * len(self.branches)
         cross_x = None 
         for idx, branch in reversed(list(enumerate(self.branches))):
             out = branch(x, cross_x)
             outputs[idx] = self.proj(out)
             
-            if self._cross_view:
+            if cross_view:
                 cross_x = out
 
         output = torch.cat(outputs, dim=1)
@@ -73,17 +120,24 @@ class Layer(nn.Module):
         return output
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self._cross_view:
-            out = self._ascending(x)
-        else:
-            asc = self._ascending(x)
-            dsc = self._descending(x)
-            out = (asc + dsc) / 2
-            
+        res = self.residual(x)
+        
+        match self._cross_view:
+            case CrossViewType.NONE:
+                out = self._larger(x, False)
+            case CrossViewType.LARGER:
+                out = self._larger(x, True)
+            case CrossViewType.SMALLER:
+                out = self._smaller(x, True)
+            case _:
+                raise ValueError('Unknown cross-view type')
+                
+        out += res
+        
         return out
 
 class Branch(nn.Module):
-    def __init__(self, config: BranchConfig, attention: SpatioTemporalAttention) -> None:
+    def __init__(self, config: BranchConfig, attention: AttentionBranch) -> None:
         super().__init__()
         
         self.window = config.window
@@ -93,26 +147,24 @@ class Branch(nn.Module):
             dilation=(config.dilation, 1),
             padding=(padding, 0))
         
-        self.q_norm = nn.LayerNorm(config.channels)
-        self.kv_norm = nn.LayerNorm(config.channels)
-        self.attention = attention
-        self.dropout = nn.Dropout(p=config.sublayer_dropout)
+        # Attention
+        self.att_branch = attention
         
-        self.ffn_norm = nn.LayerNorm(config.channels)
-        dilation = (config.window - 1) + (config.dilation - 1) * config.window
-        padding = ((config.window + (config.window - 1) * (dilation - 1) - 1) // 2) - (config.window // 2)
-        self.fnn = nn.Sequential(
-            nn.Conv2d(
-                config.channels, 
-                config.channels, 
-                kernel_size=(config.window, 1),
-                stride=(config.window, 1),
-                dilation=(dilation, 1), 
-                padding=(padding, 0)),
-            nn.GELU(), 
+        # Temporal convolution
+        self.temp_norm = nn.LayerNorm(config.channels)
+        expanded_channels = config.channels // 4
+        self.temp = nn.Sequential(
+            nn.Conv2d(config.channels, expanded_channels, kernel_size=1),
+            nn.GELU(),
             nn.Dropout(config.feature_dropout),
-            nn.Conv2d(config.channels, config.channels, kernel_size=1),
-            nn.Dropout(p=config.sublayer_dropout)
+            nn.Conv2d(
+                expanded_channels, 
+                expanded_channels, 
+                kernel_size=(config.window, 1),
+                stride=(config.window, 1)),
+            nn.GELU(),
+            nn.Dropout(config.feature_dropout),
+            nn.Conv2d(expanded_channels, config.channels, kernel_size=1)
         )
         
     def _group_window_joints(self, x: torch.Tensor) -> torch.Tensor:
@@ -128,7 +180,7 @@ class Branch(nn.Module):
         
         return x
     
-    def _group_window(self, x: torch.Tensor, batch: int) -> torch.Tensor:
+    def _group_window_frames(self, x: torch.Tensor, batch: int) -> torch.Tensor:
         N, _, C = x.shape
         # (N, window, V, C)
         x = x.view(N, self.window, -1, C)
@@ -140,58 +192,116 @@ class Branch(nn.Module):
         return x
     
     def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None) -> torch.Tensor:
-        batch, _, _, _ = x.shape
-        
-        x_q = self._group_window_joints(x)
-        x_kv = self._group_window_joints(cross_x) if cross_x is not None else x_q
+        N, _, _, _ = x.shape
         
         # Attention
-        norm_x_q = self.q_norm(x_q)
-        norm_x_kv = self.kv_norm(x_kv)
-        tmp: torch.Tensor = self.attention(norm_x_q, norm_x_kv)
-        tmp = self.dropout(tmp)
-        tmp += x_q
+        x = self._group_window_joints(x)
+        if cross_x is not None:
+            cross_x = self._group_window_joints(cross_x)
         
-        # Position-wise FFN
-        out = self.ffn_norm(tmp)
-        out = self._group_window(out, batch)
-        out: torch.Tensor = self.fnn(out)
-        out += x
+        att_out = self.att_branch(x, cross_x)
         
-        return out
+        # Temporal convolution
+        temp_out = self.temp_norm(att_out)
+        temp_out = self._group_window_frames(temp_out, batch=N)
+        temp_out = self.temp(temp_out)
+        
+        return temp_out
+
+class AttentionBranch(nn.Module):
+    def __init__(self, config: BranchConfig, network: dict) -> None:
+        super().__init__()
+        
+        # Attention
+        self.first_norm = nn.LayerNorm(config.channels)
+        self.attention = network['attention']
+        
+        if config.cross_view:
+            self.second_norm = nn.LayerNorm(config.channels)
+            self.cross_norm = nn.LayerNorm(config.channels)
+            self.cross_attention = network['cross_attention']
+            
+        self.dropout = nn.Dropout(config.sublayer_dropout)
+        
+        # FFN
+        self.ffn_norm = nn.LayerNorm(config.channels)
+        self.ffn = network['ffn']
+    
+    @staticmethod
+    def generate_dict(cross_view: bool, config: BranchConfig) -> dict:
+        d = {}
+        
+        d['attention'] = SpatioTemporalAttention(
+            config.channels, config.num_heads, config.feature_dropout, config.structure_dropout)
+        
+        if cross_view:
+            d['cross_attention'] = SpatioTemporalAttention(
+            config.channels, config.num_heads, config.feature_dropout, config.structure_dropout)
+        
+        d['ffn'] = nn.Sequential(
+            nn.Linear(config.channels, config.channels),
+            nn.GELU(), 
+            nn.Dropout(config.feature_dropout),
+            nn.Linear(config.channels, config.channels)
+        )
+        
+        return d
+        
+    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None):
+        norm_x = self.first_norm(x)
+        att_out = self.attention(norm_x, norm_x)
+        att_out = self.dropout(att_out)
+        att_out += x
+        
+        if cross_x is not None:
+            x_q = self.second_norm(att_out)
+            x_kv = self.cross_norm(cross_x)
+            cross_att_out = self.cross_attention(x_q, x_kv)
+            cross_att_out = self.dropout(cross_att_out)
+            cross_att_out += att_out
+            att_out = cross_att_out
+        
+        ffn_out = self.ffn_norm(att_out)
+        ffn_out = self.ffn(ffn_out)
+        ffn_out = self.dropout(ffn_out)
+        ffn_out += att_out
+        
+        return ffn_out
 
 class SpatioTemporalAttention(nn.Module):
     
-    def __init__(self, config: BranchConfig) -> None:
+    def __init__(self, 
+                 channels: int, 
+                 num_heads: int, 
+                 feature_dropout: float, 
+                 structure_dropout: float) -> None:
         super().__init__()
 
-        self._num_heads = config.num_heads
-        self._out_channels = config.channels
-        self._head_channels = config.channels // config.num_heads
-        self.fdrop = nn.Dropout(config.feature_dropout)
-        self._sdrop = None
+        self._num_heads = num_heads
+        self._out_channels = channels
+        self._head_channels = channels // num_heads
+        self._structure_dropout = structure_dropout
+        self.feature_dropout = nn.Dropout(feature_dropout)
         
         # Layers
-        self.query = nn.Linear(config.channels, config.channels)
-        self.query_att = nn.Linear(self._head_channels, 1)
+        self.query = nn.Linear(channels, channels)
+        self.query_att = nn.Linear(self._out_channels, self._num_heads)
         
-        self.key = nn.Linear(config.channels, config.channels)
-        self.key_att = nn.Linear(self._head_channels, 1)
+        self.key = nn.Linear(channels, channels)
+        self.key_att = nn.Linear(self._out_channels, self._num_heads)
         
-        self.value = nn.Linear(config.channels, config.channels)
-        self.transform = nn.Linear(self._head_channels, self._head_channels)
+        self.value = nn.Linear(channels, channels)
+        self.transform = nn.Linear(self._out_channels, self._out_channels)
         
-        self.proj = nn.Linear(config.channels, config.channels)
-        
-        self.softmax = nn.Softmax(-1)
+        self.proj = nn.Linear(channels, channels)
     
     @property
     def structure_dropout(self) -> float:
-        return self._sdrop
+        return self._structure_dropout
     
     @structure_dropout.setter
     def structure_dropout(self, drop: float):
-        self._sdrop = drop
+        self._structure_dropout = drop
     
     def _separate_heads(self, x: torch.Tensor) -> torch.Tensor:
         new_x_shape = x.size()[:-1] + (self._num_heads, self._head_channels)
@@ -213,49 +323,55 @@ class SpatioTemporalAttention(nn.Module):
         
         # (N, L, C_out)
         queries: torch.Tensor = self.query(x_q)
-        queries = self.fdrop(queries)
-        # (N, num_heads, L, C_head)
-        queries = self._separate_heads(queries)
-        # (N, num_heads, L, 1)
+        queries = self.feature_dropout(queries)
+        # (N, L, num_heads)
         query_score = self.query_att(queries) / (math.sqrt(self._head_channels))
-        # (N, num_heads, 1, L)
+        # (N, num_heads, L)
         query_score = query_score.transpose(-2, -1)
         # (N, num_heads, 1, L)
-        query_weight = self.softmax(query_score)
+        query_weight = F.softmax(query_score, dim=-1).unsqueeze(2)
+        # (N, num_heads, L, C_head)
+        queries = self._separate_heads(queries)
         # (N, num_heads, 1, C_head)
         pooled_query = torch.matmul(query_weight, queries)
+        # (N, 1, C_out)
+        pooled_query = self._group_heads(pooled_query)
         
         # (N, L, C_out)
         keys = self.key(x_kv)
-        keys = self.fdrop(keys)
-        # (N, num_heads, L, C_head)
-        keys = self._separate_heads(keys)  
-        # (N, num_heads, L, C_head)
+        keys = self.feature_dropout(keys)
+        # (N, L, C_out)
         keys_queries = keys * pooled_query
-        # (N, num_heads, L, 1)
+        # (N, L, num_heads)
         keys_score = self.key_att(keys_queries) / math.sqrt(self._head_channels)
-        # (N, num_heads, 1, L)
+        # (N, num_heads, L)
         keys_score = keys_score.transpose(-2, -1)
         # (N, num_head, 1, L)
-        keys_weight = self.softmax(keys_score)
+        keys_weight = F.softmax(keys_score, dim=-1).unsqueeze(2)
+        # (N, num_heads, L, C_head)
+        keys = self._separate_heads(keys)  
         # (N, num_head, 1, C_head)
         pooled_key = torch.matmul(keys_weight, keys)
         
         # (N, L, C_out)
         values = self.value(x_kv)
-        values = self.fdrop(values)
+        values = self.feature_dropout(values)
         # (N, num_heads, L, C_head)
         values = self._separate_heads(values)
         # (N, num_heads, L, C_head)
         keys_values = values * pooled_key
-        # (N, num_heads, L, C_head)
+        # (N, L, C_out)
+        keys_values = self._group_heads(keys_values)
+        # (N, L, C_out)
         keys_values = self.transform(keys_values)
+        # (N, num_heads, L, C_head)
+        keys_values = self._separate_heads(keys_values)
         # (N, num_heads, L, C_head)
         output = keys_values + queries
         
         if self.training:
             # (N, num_heads)
-            prob = torch.tensor([[1 - self._sdrop]], device=output.device).expand(output.shape[:2])
+            prob = torch.tensor([[1 - self._structure_dropout]], device=output.device).expand(output.shape[:2])
             # (N, num_heads)
             epsilon = torch.bernoulli(prob)
             # (N, num_heads, 1, 1)
@@ -281,4 +397,3 @@ class SpatioTemporalAttention(nn.Module):
             output = output / factor
         
         return output
-#''' 

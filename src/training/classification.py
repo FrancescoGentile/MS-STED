@@ -63,7 +63,7 @@ class ClassificationProcessor:
         
         if self._config.debug:
             torch.backends.cudnn.benchmark = False
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(True, warn_only=True)
             os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         else:
             torch.backends.cudnn.benchmark = True
@@ -223,7 +223,9 @@ class ClassificationProcessor:
         
         self._dropout_scheduler = StructureDropoutScheduler(
             modules=self._model.modules(),
-            p=self._config.model._structure_dropout,
+            start=self._config.model.structure_dropout_start,
+            end=self._config.model.structure_dropout_end,
+            warmup=self._config.model.structure_dropout_warmup,
             num_epochs=self._config.num_epochs,
             steps_per_epoch=self._get_steps_per_epoch(eval=False),
             start_epoch=start_epoch

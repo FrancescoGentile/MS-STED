@@ -23,7 +23,7 @@ class Embeddings(nn.Module):
         self._skeleton = skeleton
         
         id_embed, id_embed_channels = self._get_id_embeddings()
-        self.id_embeddings = Parameter(id_embed)
+        self.id_embeddings = Parameter(id_embed, requires_grad=False)
         self._id_channels = id_embed_channels
     
         joint_embed, bone_embed = self._get_type_embeddings(config.type_channels)
@@ -52,10 +52,14 @@ class Embeddings(nn.Module):
         
         joint_embed = torch.empty(type_channels)
         nn.init.uniform_(joint_embed, -bound, +bound)
-        joint_embed = joint_embed.unsqueeze(0).unsqueeze(-1).unsqueeze(-1) #(1, C, 1, 1)
         
         bone_embed = torch.empty(type_channels)
         nn.init.uniform_(bone_embed, -bound, +bound)
+        
+        while torch.all(bone_embed == joint_embed):
+            nn.init.uniform_(bone_embed, -bound, +bound)
+        
+        joint_embed = joint_embed.unsqueeze(0).unsqueeze(-1).unsqueeze(-1) #(1, C, 1, 1)
         bone_embed = bone_embed.unsqueeze(0).unsqueeze(-1).unsqueeze(-1) # (1, C, 1, 1)
         
         return joint_embed, bone_embed

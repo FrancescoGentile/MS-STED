@@ -12,16 +12,18 @@ from .modules import SpatioTemporalAttention
 class StructureDropoutScheduler:
     def __init__(self, 
                  modules: List[nn.Module], 
-                 p: float, 
+                 start: float,
+                 end: float,
                  num_epochs: int, 
                  steps_per_epoch: int,
+                 warmup: int = 8,
                  start_epoch: int = 0) -> None:
         
         self._num_steps = num_epochs * steps_per_epoch
-        self._change_step = math.floor(self._num_steps / 8)
-        self._p = p
-        self._delta1 = p / self._change_step
-        self._delta2 = p / (self._num_steps - self._change_step)
+        self._change_step = math.floor(self._num_steps / warmup) if warmup != 0 else 0
+        self._start = start
+        self._delta1 = start / self._change_step
+        self._delta2 = end / (self._num_steps - self._change_step)
         self._step = start_epoch * steps_per_epoch
         
         current_p = self._compute_dropout()
@@ -36,7 +38,7 @@ class StructureDropoutScheduler:
             num_steps = self._step - self._change_step
             new_p = self._delta2 * num_steps
         else:
-            new_p = self._p - self._delta1 * self._step
+            new_p = self._start - self._delta1 * self._step
         
         return new_p
     

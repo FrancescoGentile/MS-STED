@@ -14,7 +14,7 @@ class NoAliasDumper(yaml.SafeDumper):
     def ignore_aliases(self, data):
         return True
 
-class Filter(logging.Filter):
+class LocalMasterFilter(logging.Filter):
     def __init__(self, name: str, local_master: bool) -> None:
         super().__init__(name)
         self._local_master = local_master
@@ -64,7 +64,7 @@ def init_logger(name: str, level: int, file: Optional[str], local_master: bool) 
     stream_handler.setFormatter(formatter)
     stream_handler.setLevel(level)
     logger.addHandler(stream_handler)
-    logger.addFilter(Filter(name, local_master))
+    logger.addFilter(LocalMasterFilter(name, local_master))
 
     if file is not None:
         file_handler = logging.FileHandler(
