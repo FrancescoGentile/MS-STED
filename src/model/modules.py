@@ -81,39 +81,55 @@ class Layer(nn.Module):
             attention = AttentionBranch(branch_cfg, att_network)
             self.branches.append(Branch(branch_cfg, attention))
             
-        self.proj = nn.Conv2d(
-            in_channels=config.in_channels, 
-            out_channels=config.out_channels // len(self.branches), 
-            kernel_size=1)
+        match self._cross_view:
+            case CrossViewType.LARGER:
+                self.cross_proj = nn.ModuleList()
+                for current_branch, before_branch in zip(config.branches[1:], config.branches):
+                    if before_branch.out_channels != current_branch.channels:
+                        proj = nn.Conv2d(before_branch.out_channels, current_branch.channels, kernel_size=1)
+                    else:
+                        proj = nn.Identity()
+                    self.cross_proj.append(proj)
+            case CrossViewType.SMALLER:
+                self.cross_proj = nn.ModuleList()
+                for current_branch, before_branch in zip(config.branches, config.branches[1:]):
+                    if before_branch.out_channels != current_branch.channels:
+                        proj = nn.Conv2d(before_branch.out_channels, current_branch.channels, kernel_size=1)
+                    else:
+                        proj = nn.Identity()
+                    self.cross_proj.append(proj)
+            case _:
+                self.cross_proj = None
         
         if config.in_channels == config.out_channels:
             self.residual = nn.Identity()
         else:
             self.residual = nn.Conv2d(config.in_channels, config.out_channels, kernel_size=1)
     
-    def _larger(self, x: torch.Tensor, cross_view: bool) -> torch.Tensor:
+    def _larger(self, x: torch.Tensor) -> torch.Tensor:
         outputs = [None] * len(self.branches)
         cross_x = None 
+        last_idx = len(self.branches) - 1
         for idx, branch in enumerate(self.branches):
             out = branch(x, cross_x)
-            outputs[idx] = self.proj(out)
+            outputs[idx] = out
             
-            if cross_view:
-                cross_x = out
+            if self.cross_proj is not None and idx < last_idx:
+                cross_x = self.cross_proj[idx](out)
 
         output = torch.cat(outputs, dim=1)
         
         return output
     
-    def _smaller(self, x: torch.Tensor, cross_view: bool) -> torch.Tensor:
+    def _smaller(self, x: torch.Tensor) -> torch.Tensor:
         outputs = [None] * len(self.branches)
         cross_x = None 
         for idx, branch in reversed(list(enumerate(self.branches))):
             out = branch(x, cross_x)
-            outputs[idx] = self.proj(out)
+            outputs[idx] = out
             
-            if cross_view:
-                cross_x = out
+            if self.cross_proj is not None and idx > 0:
+                cross_x = self.cross_proj[idx-1](out)
 
         output = torch.cat(outputs, dim=1)
         
@@ -124,11 +140,11 @@ class Layer(nn.Module):
         
         match self._cross_view:
             case CrossViewType.NONE:
-                out = self._larger(x, False)
+                out = self._larger(x)
             case CrossViewType.LARGER:
-                out = self._larger(x, True)
+                out = self._larger(x)
             case CrossViewType.SMALLER:
-                out = self._smaller(x, True)
+                out = self._smaller(x)
             case _:
                 raise ValueError('Unknown cross-view type')
                 
@@ -152,19 +168,15 @@ class Branch(nn.Module):
         
         # Temporal convolution
         self.temp_norm = nn.LayerNorm(config.channels)
-        expanded_channels = config.channels // 4
         self.temp = nn.Sequential(
-            nn.Conv2d(config.channels, expanded_channels, kernel_size=1),
+            nn.Conv2d(config.channels, config.out_channels, kernel_size=1),
             nn.GELU(),
             nn.Dropout(config.feature_dropout),
             nn.Conv2d(
-                expanded_channels, 
-                expanded_channels, 
+                config.out_channels,
+                config.out_channels, 
                 kernel_size=(config.window, 1),
-                stride=(config.window, 1)),
-            nn.GELU(),
-            nn.Dropout(config.feature_dropout),
-            nn.Conv2d(expanded_channels, config.channels, kernel_size=1)
+                stride=(config.window, 1))
         )
         
     def _group_window_joints(self, x: torch.Tensor) -> torch.Tensor:

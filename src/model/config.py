@@ -316,6 +316,7 @@ class LayerConfig:
         last_prod = -1
         for idx, bc in enumerate(cfg.branches):
             bc.channels = self._in_channels
+            bc.out_channels = self._out_channels // len(cfg.branches)
             bc.num_heads = self._num_heads
             bc.feature_dropout = cfg.feature_dropout
             bc.sublayer_dropout = cfg.sublayer_dropout
@@ -366,6 +367,7 @@ class LayerConfig:
 class BranchConfig:
     def __init__(self, cfg: dict) -> None:
         self._channels = cfg.channels
+        self._out_channels = cfg.out_channels
         self._num_heads = cfg.num_heads
         self._cross_view = cfg.cross_view
         
@@ -401,6 +403,10 @@ class BranchConfig:
     @property
     def channels(self) -> int:
         return self._channels
+    
+    @property
+    def out_channels(self) -> int:
+        return self._out_channels
     
     @property
     def num_heads(self) -> int:
