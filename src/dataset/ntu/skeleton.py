@@ -30,7 +30,7 @@ class NTUSkeletonGraph(SkeletonGraph):
         self._connections = connections - (1, 1)
         
         self._adjacency = self._get_adjacency_matrix()
-        self._laplacian = self._get_laplacian()
+        self._joints_bones = self._get_joints_and_bones()
     
     def _get_adjacency_matrix(self) -> np.ndarray:
         adj = np.zeros((self._num_joints, self._num_joints))
@@ -40,27 +40,32 @@ class NTUSkeletonGraph(SkeletonGraph):
         
         return adj
     
-    def _get_laplacian(self) -> np.ndarray:
-        identity = np.identity(self._num_joints)
+    def _get_joints_and_bones(self) -> np.ndarray:
+        num_bones = len(self._connections)
+        adj = np.zeros((self._num_joints + num_bones, self._num_joints + num_bones))
+        for i,j in self._edges:
+            adj[i, j] = 1
+            adj[j, i] = 1
         
-        degree = self._adjacency.sum(-1)
-        degree_inv_sqrt = np.power(degree, -0.5)
-        inv_degree_matrix = np.identity(self._num_joints) * degree_inv_sqrt
-        norm_adj = (inv_degree_matrix @ self._adjacency @ inv_degree_matrix)
+        for idx, bone in enumerate(self._connections):
+            bone_idx = idx + self._num_joints
+            adj[bone_idx, bone_idx] = 1
+            adj[bone_idx, bone[0]] = 1
+            adj[bone[0], bone_idx] = 1
+            adj[bone_idx, bone[1]] = 1
+            adj[bone[1], bone_idx] = 1
         
-        laplacian: np.ndarray = identity - norm_adj
-        
-        return laplacian
+        return adj
     
     @property
     def adjacency_matrix(self) -> np.ndarray:
         return self._adjacency
     
     @property
-    def laplacian_matrix(self) -> np.ndarray:
-        return self._laplacian
-    
-    @property
     def joints_connections(self) -> np.ndarray:
         return self._connections
+    
+    @property
+    def joints_bones_adjacency_matrix(self) -> np.ndarray:
+        return self._joints_bones
     

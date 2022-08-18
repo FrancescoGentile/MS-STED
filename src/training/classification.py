@@ -153,9 +153,9 @@ class ClassificationProcessor:
         num_frames = self._train_dataset.num_frames
         
         embeddings = Embeddings(self._config.model.embeddings, channels, num_frames, skeleton)
-        encoder = Encoder(self._config.model.encoder, False)
+        encoder = Encoder(self._config.model.encoder, skeleton, False)
         if self._config.pretrain_weights is not None:
-            decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
+            decoder = Decoder(self._config.model.decoder, self._config.model.encoder, skeleton)
             reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels)
             discriminator = Discriminator(self._config.model.decoder.out_channels)
             model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)

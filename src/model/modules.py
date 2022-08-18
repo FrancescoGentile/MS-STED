@@ -5,13 +5,15 @@
 from __future__ import annotations
 import math
 from typing import Optional
+import numpy as np
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.nn.parameter import Parameter
+from memory_efficient_attention import efficient_dot_product_attention_pt
 
 from .config import BlockConfig, CrossViewType, LayerConfig, BranchConfig
-
+from ..dataset.skeleton import SkeletonGraph, normalize_adjacency_matrix
 
 class AttentionPool(nn.Module):
     def __init__(self, k: int, channels: int, num_heads: int = 8) -> None:
@@ -51,12 +53,12 @@ class AttentionPool(nn.Module):
 
 class Block(nn.Module):
     
-    def __init__(self, config: BlockConfig) -> None:
+    def __init__(self, config: BlockConfig, skeleton: SkeletonGraph) -> None:
         super().__init__()
         
         self.layers = nn.ModuleList()
         for layer_cfg in config.layers:
-            self.layers.append(Layer(layer_cfg))
+            self.layers.append(Layer(layer_cfg, skeleton))
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
@@ -67,18 +69,14 @@ class Block(nn.Module):
         return out
 
 class Layer(nn.Module):
-    def __init__(self, config: LayerConfig) -> None:
+    def __init__(self, config: LayerConfig, skeleton: SkeletonGraph) -> None:
         super().__init__()
         
         self._cross_view = config.cross_view
         
-        att_network = AttentionBranch.generate_dict(
-            cross_view=self._cross_view != CrossViewType.NONE,
-            config=config.branches[0]
-        )
         self.branches = nn.ModuleList()
         for branch_cfg in config.branches:
-            attention = AttentionBranch(branch_cfg, att_network)
+            attention = AttentionBranch(branch_cfg, skeleton)
             self.branches.append(Branch(branch_cfg, attention))
             
         match self._cross_view:
@@ -203,7 +201,7 @@ class Branch(nn.Module):
         
         return x
     
-    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor]) -> torch.Tensor:
         N, _, _, _ = x.shape
         
         # Attention
@@ -221,23 +219,28 @@ class Branch(nn.Module):
         return temp_out
 
 class AttentionBranch(nn.Module):
-    def __init__(self, config: BranchConfig, network: dict) -> None:
+    def __init__(self, config: BranchConfig, skeleton: SkeletonGraph) -> None:
         super().__init__()
         
         # Attention
         self.first_norm = nn.LayerNorm(config.channels)
-        self.attention = network['attention']
+        self.attention = SpatioTemporalAttention(skeleton, config)
         
         if config.cross_view:
             self.second_norm = nn.LayerNorm(config.channels)
             self.cross_norm = nn.LayerNorm(config.channels)
-            self.cross_attention = network['cross_attention']
+            self.cross_attention = SpatioTemporalAttention(skeleton, config)
             
         self.dropout = nn.Dropout(config.sublayer_dropout)
         
         # FFN
         self.ffn_norm = nn.LayerNorm(config.channels)
-        self.ffn = network['ffn']
+        self.ffn = nn.Sequential(
+            nn.Linear(config.channels, config.channels),
+            nn.GELU(), 
+            nn.Dropout(config.feature_dropout),
+            nn.Linear(config.channels, config.channels)
+        )
     
     @staticmethod
     def generate_dict(cross_view: bool, config: BranchConfig) -> dict:
@@ -259,7 +262,7 @@ class AttentionBranch(nn.Module):
         
         return d
         
-    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor]):
         norm_x = self.first_norm(x)
         att_out = self.attention(norm_x, norm_x)
         att_out = self.dropout(att_out)
@@ -279,7 +282,104 @@ class AttentionBranch(nn.Module):
         ffn_out += att_out
         
         return ffn_out
+    
+class SpatioTemporalAttention(nn.Module):
+    def __init__(self,
+                 skeleton: SkeletonGraph,
+                 config: BranchConfig) -> None:
+        super().__init__()
+        
+        self._num_heads = config.num_heads
+        self._channels = config.channels
+        self._head_channels = config.channels // config.num_heads
+        self._structure_dropout = config.structure_dropout
+        self.feature_dropout = nn.Dropout(config.feature_dropout)
+        
+        # (V, V)
+        global_attn = self._build_spatio_temporal_graph(
+            skeleton.joints_bones_adjacency_matrix, 
+            config.window)
+        # (1, V, 1, V)
+        global_attn = torch.from_numpy(global_attn).unsqueeze(1).unsqueeze(0)
+        self.global_attn = nn.Parameter(global_attn)
+        # (1, 1, num_heads, 1)
+        self.alphas = nn.Parameter(torch.ones(1, 1, config.num_heads, 1))
+        
+        # Layers
+        self.q_proj = nn.Linear(config.channels, config.channels)
+        self.kv_proj = nn.Linear(config.channels, 2 * config.channels)
+        self.proj = nn.Linear(config.channels, config.channels)
+    
+    def _build_spatio_temporal_graph(self, adj: np.ndarray, window: int) -> np.ndarray:
+        window_adj = np.tile(adj, (window, window)).copy()
+        window_adj = normalize_adjacency_matrix(window_adj)
+        return window_adj
+        
+    @property
+    def structure_dropout(self) -> float:
+        return self._structure_dropout
+    
+    @structure_dropout.setter
+    def structure_dropout(self, drop: float):
+        self._structure_dropout = drop
+        
+    def _attn_calc_fn(self, q_offset, k_offset, attn_weights, calc_fn_data) -> torch.Tensor:
+        new_attn_weights = self.global_attn + self.alphas * attn_weights
+        new_attn_weights = self.feature_dropout(new_attn_weights)
+        return new_attn_weights
+        
+    def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
+        N, LQ, _ = x_q.shape    
+        # (N, L, C)
+        q = self.q_proj(x_q)
+        # (N, L, num_heads, C_head)
+        q = q.view(N, LQ, self._num_heads, self._head_channels)
+        q = self.feature_dropout(q)
+        
+        N, LK, _ = x_kv.shape
+        # (N, L, 2 * C)
+        kv = self.kv_proj(x_kv)
+        # (N, L, num_heads, 2 * C_head)
+        kv = kv.view(N, LK, self._num_heads, 2 * self._head_channels)
+        kv = self.feature_dropout(kv)
+        # 2 * (N, L, num_heads, C_head)
+        k, v = torch.chunk(kv, chunks=2, dim=-1)
+        
+        # (N, L, num_heads, C_head)
+        values = efficient_dot_product_attention_pt(
+            q, k, v, 
+            query_chunk_size=LQ,
+            key_chunk_size=LK,
+            weights_calc_fn=self._attn_calc_fn)
+        
+        if self.training:
+            # (N, num_heads)
+            prob = torch.tensor([[1 - self._structure_dropout]], device=values.device).expand(values.size(0), values.size(2))
+            # (N, num_heads)
+            epsilon = torch.bernoulli(prob)
+            # (N, 1, num_heads, 1)
+            binary_mask = epsilon.unsqueeze(1).unsqueeze(-1)
+            # (N, L, num_heads, C_head)
+            values = values * binary_mask
+        
+        # (N, L, C)
+        N, L, _, _ = values.shape
+        values = values.view(N, L, -1)
+        values = self.proj(values)
+        
+        if self.training:
+            # (N)
+            factor = torch.sum(epsilon, dim=-1)
+            # (N, 1, 1)
+            factor = factor.unsqueeze(-1).unsqueeze(-1)
+            factor = factor / self._num_heads
+            factor[factor == 0] = 1
+            # (N, L, C_out)
+            values = values / factor
+        
+        return values
 
+'''
 class SpatioTemporalAttention(nn.Module):
     
     def __init__(self, 
@@ -409,3 +509,4 @@ class SpatioTemporalAttention(nn.Module):
             output = output / factor
         
         return output
+'''

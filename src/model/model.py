@@ -6,28 +6,27 @@ from typing import List, Tuple, Union
 import torch 
 import torch.nn as nn
 
+from ..dataset.skeleton import SkeletonGraph
+
 from .config import DecoderConfig, EncoderConfig
 from .embeddings import Embeddings
-from .modules import Block, AttentionPool
+from .modules import Block
 
 class Encoder(nn.Module):
-    def __init__(self, config: EncoderConfig, save_intermediates: bool = False) -> None:
+    def __init__(self, 
+                 config: EncoderConfig,
+                 skeleton: SkeletonGraph,
+                 save_intermediates: bool = False) -> None:
         super().__init__()
         
         self._save_interm = save_intermediates
         
         self.blocks = nn.ModuleList()
         
-        for idx, block_cfg in enumerate(config.blocks):
-            mdict = nn.ModuleDict()
-            mdict['block'] = Block(block_cfg)
+        for block_cfg in config.blocks:
+            self.blocks.append(Block(block_cfg, skeleton))
             
-            if idx < len(config.blocks) - 1:
-                mdict['pool'] = AttentionPool(2, block_cfg.out_channels)
-            else:
-                mdict['pool'] = None
-            
-            self.blocks.append(mdict)
+        self.average = nn.AvgPool2d(kernel_size=(2, 1), stride=(2, 1))
         
     @property
     def save_intermediates(self) -> bool:
@@ -45,11 +44,13 @@ class Encoder(nn.Module):
             output = None
         
         # Apply blocks
-        for block in self.blocks:
-            tmp = block['block'](x)
-            if block['pool'] is not None:
-                x = block['pool'](tmp)
+        last_idx = len(self.blocks) - 1
+        for idx, block in enumerate(self.blocks):
+            tmp = block(x)
             
+            if idx < last_idx:
+                x = self.average(tmp)
+                
             if self.save_intermediates:
                 output.append(tmp)
             else:
@@ -108,13 +109,13 @@ class ClassificationModel(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, dconfig: DecoderConfig, econfig: EncoderConfig) -> None:
+    def __init__(self, dconfig: DecoderConfig, econfig: EncoderConfig, skeleton: SkeletonGraph) -> None:
         super().__init__()
         
         self.blocks = nn.ModuleList()
         self.transforms = nn.ModuleList()
         for eblock, dblock in zip(econfig.blocks[::-1], dconfig.blocks):
-            self.blocks.append(Block(dblock))
+            self.blocks.append(Block(dblock, skeleton))
             if eblock.out_channels != dblock.in_channels:
                 self.transforms.append(
                     nn.Conv2d(eblock.out_channels, dblock.in_channels, kernel_size=1))

@@ -54,6 +54,7 @@ def init_logger(name: str, level: int, file: Optional[str], local_master: bool) 
         logging.Logger: the initialized logger.
     """
     logger = logging.getLogger(name)
+    logger.propagate = False
     for handler in logger.handlers:
         logger.removeHandler(handler)
 

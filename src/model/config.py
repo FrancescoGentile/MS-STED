@@ -151,7 +151,7 @@ class EncoderConfig:
             bc.sublayer_dropout = cfg.sublayer_dropout
             bc.out_channels = out_ch
             
-            block = BlockConfig(bc)
+            block = BlockConfig(bc, idx)
             out_ch = block.in_channels
             self._blocks[idx] = block
     
@@ -196,7 +196,7 @@ class DecoderConfig:
             bc.sublayer_dropout = cfg.sublayer_dropout
             bc.out_channels = out_ch
             
-            block = BlockConfig(bc)
+            block = BlockConfig(bc, idx)
             out_ch = block.in_channels
             self._blocks[idx] = block
             
@@ -226,7 +226,7 @@ class DecoderConfig:
 
 # Configuration for a block
 class BlockConfig:
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, block_idx: int) -> None:
         # Set channels
         if cfg.channels is None:
             raise ValueError('Missing channels field in block config')
@@ -252,7 +252,9 @@ class BlockConfig:
             lc.out_channels = out_ch
             lc.feature_dropout = cfg.feature_dropout
             lc.sublayer_dropout = cfg.sublayer_dropout
-            self._layers.append(LayerConfig(lc))
+            
+            previous = block_idx > 0 and idx == 0
+            self._layers.append(LayerConfig(lc, previous))
             
     def to_dict(self) -> dict:
         d = {'channels': self._in_channels}
@@ -284,7 +286,7 @@ class CrossViewType(Enum):
 
 # Configuration for a layer
 class LayerConfig:
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, previous: bool) -> None:
         # Set channels
         self._in_channels = cfg.in_channels
         self._out_channels = cfg.out_channels
@@ -326,7 +328,7 @@ class LayerConfig:
             else:
                 bc.cross_view = self._cross_view != CrossViewType.NONE
             
-            branch = BranchConfig(bc)
+            branch = BranchConfig(bc, previous)
             if branch.window * branch.dilation < last_prod:
                 raise ValueError(f'Branches must be listed in ascending order of size') 
             else:
@@ -365,11 +367,12 @@ class LayerConfig:
         return self._branches
 
 class BranchConfig:
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, previous: bool) -> None:
         self._channels = cfg.channels
         self._out_channels = cfg.out_channels
         self._num_heads = cfg.num_heads
         self._cross_view = cfg.cross_view
+        self._previous = previous
         
         # Set window
         if cfg.window is None:
@@ -431,3 +434,6 @@ class BranchConfig:
     @property
     def structure_dropout(self)-> float:
         return 0.0 # it will be overwritten by the scheduler
+    
+    def has_previous(self) -> bool:
+        return self._previous

@@ -10,7 +10,7 @@ from scipy.linalg import eig
 import math
 
 from .config import EmbeddingsConfig
-from ..dataset.skeleton import SkeletonGraph
+from ..dataset.skeleton import SkeletonGraph, laplacian_adjacency_matrix
 
 class Embeddings(nn.Module):
     
@@ -40,7 +40,9 @@ class Embeddings(nn.Module):
         self.embed_proj = nn.Conv2d(total_channels, config.out_channels, kernel_size=1)
     
     def _get_id_embeddings(self) -> Tuple[torch.Tensor, int]:
-        laplacian = self._skeleton.laplacian_matrix
+        adj = self._skeleton.adjacency_matrix
+        laplacian = laplacian_adjacency_matrix(adj)
+        
         _, vectors = eig(laplacian, left=False, right=True)
         id_embeddings = torch.from_numpy(vectors).float()
         id_embeddings = id_embeddings.unsqueeze(0).unsqueeze(2) # (1, C, 1, V)
