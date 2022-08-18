@@ -9,8 +9,6 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-from torch.nn.parameter import Parameter
-from memory_efficient_attention import efficient_dot_product_attention_pt
 
 from .config import BlockConfig, CrossViewType, LayerConfig, BranchConfig
 from ..dataset.skeleton import SkeletonGraph, normalize_adjacency_matrix
@@ -165,7 +163,7 @@ class Branch(nn.Module):
         self.att_branch = attention
         
         # Temporal convolution
-        self.temp_norm = nn.LayerNorm(config.channels)
+        self.temp_norm = nn.GroupNorm(1, config.channels)
         self.temp = nn.Sequential(
             nn.Conv2d(config.channels, config.out_channels, kernel_size=1),
             nn.GELU(),
@@ -183,21 +181,20 @@ class Branch(nn.Module):
         x = self.unfold(x)
         # (N, C, window, T, V)
         x = x.view(N, C, self.window, T, V)
-        # (N, T, window, V, C)
-        x = x.permute(0, 3, 2, 4, 1).contiguous()
-        # (N * T, window * V, C)
-        x = x.view(N * T, self.window * V, C)
+        # (N, C, T, window, V)
+        x = x.permute(0, 1, 3, 2, 4).contiguous()
+        # (N, C, T, window * V)
+        x = x.view(N, C, T, self.window * V)
         
         return x
     
     def _group_window_frames(self, x: torch.Tensor, batch: int) -> torch.Tensor:
-        N, _, C = x.shape
-        # (N, window, V, C)
-        x = x.view(N, self.window, -1, C)
-        # (N, T * window, V, C)
-        x = x.view(batch, -1, *(x.shape[2:]))
+        # (N, C, T, window * V)
+        N, C, T, _ = x.shape
+        # (N, C, T, window, V)
+        x = x.view(N, C, T, self.window, -1)
         # (N, C, T * window, V)
-        x = x.permute(0, 3, 1, 2).contiguous()
+        x = x.view(N, C, T * self.window, -1)
         
         return x
     
@@ -223,23 +220,23 @@ class AttentionBranch(nn.Module):
         super().__init__()
         
         # Attention
-        self.first_norm = nn.LayerNorm(config.channels)
+        self.first_norm = nn.GroupNorm(1, config.channels)
         self.attention = SpatioTemporalAttention(skeleton, config)
         
         if config.cross_view:
-            self.second_norm = nn.LayerNorm(config.channels)
-            self.cross_norm = nn.LayerNorm(config.channels)
+            self.second_norm = nn.GroupNorm(1, config.channels)
+            self.cross_norm = nn.GroupNorm(1, config.channels)
             self.cross_attention = SpatioTemporalAttention(skeleton, config)
             
         self.dropout = nn.Dropout(config.sublayer_dropout)
         
         # FFN
-        self.ffn_norm = nn.LayerNorm(config.channels)
+        self.ffn_norm = nn.GroupNorm(1, config.channels)
         self.ffn = nn.Sequential(
-            nn.Linear(config.channels, config.channels),
+            nn.Conv2d(config.channels, config.channels, kernel_size=1),
             nn.GELU(), 
             nn.Dropout(config.feature_dropout),
-            nn.Linear(config.channels, config.channels)
+            nn.Conv2d(config.channels, config.channels, kernel_size=1)
         )
     
     @staticmethod
@@ -254,10 +251,10 @@ class AttentionBranch(nn.Module):
             config.channels, config.num_heads, config.feature_dropout, config.structure_dropout)
         
         d['ffn'] = nn.Sequential(
-            nn.Linear(config.channels, config.channels),
+            nn.Conv2d(config.channels, config.channels, kernel_size=1),
             nn.GELU(), 
             nn.Dropout(config.feature_dropout),
-            nn.Linear(config.channels, config.channels)
+            nn.Conv2d(config.channels, config.channels, kernel_size=1)
         )
         
         return d
@@ -299,16 +296,16 @@ class SpatioTemporalAttention(nn.Module):
         global_attn = self._build_spatio_temporal_graph(
             skeleton.joints_bones_adjacency_matrix, 
             config.window)
-        # (1, V, 1, V)
-        global_attn = torch.from_numpy(global_attn).unsqueeze(1).unsqueeze(0)
+        # (1, 1, V, V)
+        global_attn = torch.from_numpy(global_attn).unsqueeze(0).unsqueeze(0)
         self.global_attn = nn.Parameter(global_attn)
-        # (1, 1, num_heads, 1)
-        self.alphas = nn.Parameter(torch.ones(1, 1, config.num_heads, 1))
+        # (1, num_heads, 1, 1)
+        self.alphas = nn.Parameter(torch.ones(1, config.num_heads, 1, 1))
         
         # Layers
-        self.q_proj = nn.Linear(config.channels, config.channels)
-        self.kv_proj = nn.Linear(config.channels, 2 * config.channels)
-        self.proj = nn.Linear(config.channels, config.channels)
+        self.q_proj = nn.Conv2d(config.channels, config.channels, kernel_size=1)
+        self.k_proj = nn.Conv2d(config.channels, config.channels, kernel_size=1)
+        self.proj = nn.Conv2d(config.channels * config.num_heads, config.channels, kernel_size=1)
     
     def _build_spatio_temporal_graph(self, adj: np.ndarray, window: int) -> np.ndarray:
         window_adj = np.tile(adj, (window, window)).copy()
@@ -323,58 +320,48 @@ class SpatioTemporalAttention(nn.Module):
     def structure_dropout(self, drop: float):
         self._structure_dropout = drop
         
-    def _attn_calc_fn(self, q_offset, k_offset, attn_weights, calc_fn_data) -> torch.Tensor:
-        new_attn_weights = self.global_attn + self.alphas * attn_weights
-        new_attn_weights = self.feature_dropout(new_attn_weights)
-        return new_attn_weights
-        
     def forward(self, x_q: torch.Tensor, x_kv: torch.Tensor) -> torch.Tensor:
-        N, LQ, _ = x_q.shape    
-        # (N, L, C)
+        N, C, T, V = x_q.shape    
+        # (N, C, T, V)
         q = self.q_proj(x_q)
-        # (N, L, num_heads, C_head)
-        q = q.view(N, LQ, self._num_heads, self._head_channels)
+        # (N, num_heads, C_head, T, V)
+        q = q.view(N, self._num_heads, self._head_channels, T, V)
         q = self.feature_dropout(q)
         
-        N, LK, _ = x_kv.shape
-        # (N, L, 2 * C)
-        kv = self.kv_proj(x_kv)
-        # (N, L, num_heads, 2 * C_head)
-        kv = kv.view(N, LK, self._num_heads, 2 * self._head_channels)
-        kv = self.feature_dropout(kv)
-        # 2 * (N, L, num_heads, C_head)
-        k, v = torch.chunk(kv, chunks=2, dim=-1)
+        # (N, C, T, V)
+        k = self.k_proj(x_kv)
+        # (N, num_heads, C_head, T, V)
+        k = k.view(N, self._num_heads, self._head_channels, T, V)
+        k = self.feature_dropout(k)
         
-        # (N, L, num_heads, C_head)
-        values = efficient_dot_product_attention_pt(
-            q, k, v, 
-            query_chunk_size=LQ,
-            key_chunk_size=LK,
-            weights_calc_fn=self._attn_calc_fn)
+        attn = torch.tanh(torch.einsum('nsctu,nsctv->nsuv', [q, k]) / (self._head_channels * T)) * self.alphas
+        attn += self.global_attn
+        attn = self.feature_dropout(attn)
+        # (N, num_heads, C, T, V)
+        values = torch.einsum('nctu,nsuv->nsctv', [x_kv, attn]).contiguous()
         
         if self.training:
             # (N, num_heads)
-            prob = torch.tensor([[1 - self._structure_dropout]], device=values.device).expand(values.size(0), values.size(2))
+            prob = torch.tensor([[1 - self._structure_dropout]], device=values.device).expand(values.shape[:2])
             # (N, num_heads)
             epsilon = torch.bernoulli(prob)
-            # (N, 1, num_heads, 1)
-            binary_mask = epsilon.unsqueeze(1).unsqueeze(-1)
-            # (N, L, num_heads, C_head)
+            # (N, num_heads, 1, 1, 1)
+            binary_mask = epsilon.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            # (N, num_heads, C_head, T, V)
             values = values * binary_mask
         
-        # (N, L, C)
-        N, L, _, _ = values.shape
-        values = values.view(N, L, -1)
+        # (N, C, T, V)
+        values = values.view(N, -1, T, V)
         values = self.proj(values)
         
         if self.training:
             # (N)
             factor = torch.sum(epsilon, dim=-1)
-            # (N, 1, 1)
-            factor = factor.unsqueeze(-1).unsqueeze(-1)
+            # (N, 1, 1. 1)
+            factor = factor.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
             factor = factor / self._num_heads
             factor[factor == 0] = 1
-            # (N, L, C_out)
+            # # (N, C, T, V)
             values = values / factor
         
         return values
