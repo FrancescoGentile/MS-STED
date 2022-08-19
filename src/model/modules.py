@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import BlockConfig, CrossViewType, LayerConfig, BranchConfig
+from .norm import LayerNorm2d
+from .config import BlockConfig, CrossViewType, LayerConfig, BranchConfig, SampleType, TemporalConfig
 
 
 class AttentionPool(nn.Module):
@@ -71,72 +72,46 @@ class Layer(nn.Module):
         super().__init__()
         
         self._cross_view = config.cross_view
-        
-        att_network = AttentionBranch.generate_dict(
-            cross_view=self._cross_view != CrossViewType.NONE,
-            config=config.branches[0]
-        )
+
         self.branches = nn.ModuleList()
         for branch_cfg in config.branches:
-            attention = AttentionBranch(branch_cfg, att_network)
-            self.branches.append(Branch(branch_cfg, attention))
+            self.branches.append(Branch(branch_cfg))
             
-        match self._cross_view:
-            case CrossViewType.LARGER:
-                self.cross_proj = nn.ModuleList()
-                for current_branch, before_branch in zip(config.branches[1:], config.branches):
-                    if before_branch.out_channels != current_branch.channels:
-                        proj = nn.Conv2d(before_branch.out_channels, current_branch.channels, kernel_size=1)
-                    else:
-                        proj = nn.Identity()
-                    self.cross_proj.append(proj)
-            case CrossViewType.SMALLER:
-                self.cross_proj = nn.ModuleList()
-                for current_branch, before_branch in zip(config.branches, config.branches[1:]):
-                    if before_branch.out_channels != current_branch.channels:
-                        proj = nn.Conv2d(before_branch.out_channels, current_branch.channels, kernel_size=1)
-                    else:
-                        proj = nn.Identity()
-                    self.cross_proj.append(proj)
-            case _:
-                self.cross_proj = None
+        self.temporal = TemporalConvolution(config.temporal)
         
-        if config.in_channels == config.out_channels:
-            self.residual = nn.Identity()
-        else:
-            self.residual = nn.Conv2d(config.in_channels, config.out_channels, kernel_size=1)
+        #if config.in_channels == config.out_channels:
+        #    self.residual = nn.Identity()
+        #else:
+        #    self.residual = nn.Conv2d(config.in_channels, config.out_channels, kernel_size=1)
     
     def _larger(self, x: torch.Tensor) -> torch.Tensor:
-        outputs = [None] * len(self.branches)
+        output = 0
         cross_x = None 
-        last_idx = len(self.branches) - 1
-        for idx, branch in enumerate(self.branches):
+        for branch in self.branches:
             out = branch(x, cross_x)
-            outputs[idx] = out
+            output += out
             
-            if self.cross_proj is not None and idx < last_idx:
-                cross_x = self.cross_proj[idx](out)
-
-        output = torch.cat(outputs, dim=1)
+            if self._cross_view == CrossViewType.LARGER:
+                cross_x = out
         
+        output /= len(self.branches)
         return output
     
     def _smaller(self, x: torch.Tensor) -> torch.Tensor:
-        outputs = [None] * len(self.branches)
+        output = 0
         cross_x = None 
-        for idx, branch in reversed(list(enumerate(self.branches))):
+        for branch in reversed(self.branches):
             out = branch(x, cross_x)
-            outputs[idx] = out
+            output += out
             
-            if self.cross_proj is not None and idx > 0:
-                cross_x = self.cross_proj[idx-1](out)
-
-        output = torch.cat(outputs, dim=1)
+            if self._cross_view == CrossViewType.SMALLER:
+                cross_x = out
         
+        output /= len(self.branches)
         return output
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        res = self.residual(x)
+        #res = self.residual(x)
         
         match self._cross_view:
             case CrossViewType.NONE:
@@ -147,13 +122,13 @@ class Layer(nn.Module):
                 out = self._smaller(x)
             case _:
                 raise ValueError('Unknown cross-view type')
-                
-        out += res
+            
+        out = self.temporal(out)
         
         return out
 
 class Branch(nn.Module):
-    def __init__(self, config: BranchConfig, attention: AttentionBranch) -> None:
+    def __init__(self, config: BranchConfig) -> None:
         super().__init__()
         
         self.window = config.window
@@ -164,19 +139,31 @@ class Branch(nn.Module):
             padding=(padding, 0))
         
         # Attention
-        self.att_branch = attention
+        self.first_norm = nn.LayerNorm(config.channels)
+        self.attention = SpatioTemporalAttention(
+            config.channels, 
+            config.num_heads, 
+            config.feature_dropout, 
+            config.structure_dropout)
         
-        # Temporal convolution
-        self.temp_norm = nn.LayerNorm(config.channels)
-        self.temp = nn.Sequential(
-            nn.Conv2d(config.channels, config.out_channels, kernel_size=1),
-            nn.GELU(),
+        if config.cross_view:
+            self.second_norm = nn.LayerNorm(config.channels)
+            self.cross_norm = nn.LayerNorm(config.channels)
+            self.cross_attention = SpatioTemporalAttention(
+                config.channels, 
+                config.num_heads, 
+                config.feature_dropout, 
+                config.structure_dropout)
+            
+        self.dropout = nn.Dropout(config.sublayer_dropout)
+        
+        # FFN
+        self.ffn_norm = nn.LayerNorm(config.channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(config.channels, config.channels),
+            nn.GELU(), 
             nn.Dropout(config.feature_dropout),
-            nn.Conv2d(
-                config.out_channels,
-                config.out_channels, 
-                kernel_size=(config.window, 1),
-                stride=(config.window, 1))
+            nn.Linear(config.channels, config.channels)
         )
         
     def _group_window_joints(self, x: torch.Tensor) -> torch.Tensor:
@@ -192,13 +179,20 @@ class Branch(nn.Module):
         
         return x
     
-    def _group_window_frames(self, x: torch.Tensor, batch: int) -> torch.Tensor:
+    def _average_window_joints(self, x: torch.Tensor) -> torch.Tensor:
         N, _, C = x.shape
-        # (N, window, V, C)
+        # (N * T, window, V, C)
         x = x.view(N, self.window, -1, C)
-        # (N, T * window, V, C)
-        x = x.view(batch, -1, *(x.shape[2:]))
-        # (N, C, T * window, V)
+        # (N * T, V, C)
+        x = torch.mean(x, dim=1)
+        
+        return x
+    
+    def _reshape(self, x: torch.Tensor, batch: int) -> torch.Tensor:
+        _, V, C = x.shape
+        # (N, T, V, C)
+        x = x.view(batch, -1, V, C)
+        # (N, C, T, V)
         x = x.permute(0, 3, 1, 2).contiguous()
         
         return x
@@ -208,58 +202,6 @@ class Branch(nn.Module):
         
         # Attention
         x = self._group_window_joints(x)
-        if cross_x is not None:
-            cross_x = self._group_window_joints(cross_x)
-        
-        att_out = self.att_branch(x, cross_x)
-        
-        # Temporal convolution
-        temp_out = self.temp_norm(att_out)
-        temp_out = self._group_window_frames(temp_out, batch=N)
-        temp_out = self.temp(temp_out)
-        
-        return temp_out
-
-class AttentionBranch(nn.Module):
-    def __init__(self, config: BranchConfig, network: dict) -> None:
-        super().__init__()
-        
-        # Attention
-        self.first_norm = nn.LayerNorm(config.channels)
-        self.attention = network['attention']
-        
-        if config.cross_view:
-            self.second_norm = nn.LayerNorm(config.channels)
-            self.cross_norm = nn.LayerNorm(config.channels)
-            self.cross_attention = network['cross_attention']
-            
-        self.dropout = nn.Dropout(config.sublayer_dropout)
-        
-        # FFN
-        self.ffn_norm = nn.LayerNorm(config.channels)
-        self.ffn = network['ffn']
-    
-    @staticmethod
-    def generate_dict(cross_view: bool, config: BranchConfig) -> dict:
-        d = {}
-        
-        d['attention'] = SpatioTemporalAttention(
-            config.channels, config.num_heads, config.feature_dropout, config.structure_dropout)
-        
-        if cross_view:
-            d['cross_attention'] = SpatioTemporalAttention(
-            config.channels, config.num_heads, config.feature_dropout, config.structure_dropout)
-        
-        d['ffn'] = nn.Sequential(
-            nn.Linear(config.channels, config.channels),
-            nn.GELU(), 
-            nn.Dropout(config.feature_dropout),
-            nn.Linear(config.channels, config.channels)
-        )
-        
-        return d
-        
-    def forward(self, x: torch.Tensor, cross_x: Optional[torch.Tensor] = None):
         norm_x = self.first_norm(x)
         att_out = self.attention(norm_x, norm_x)
         att_out = self.dropout(att_out)
@@ -267,18 +209,24 @@ class AttentionBranch(nn.Module):
         
         if cross_x is not None:
             x_q = self.second_norm(att_out)
+            cross_x = self._group_window_joints(cross_x)
             x_kv = self.cross_norm(cross_x)
             cross_att_out = self.cross_attention(x_q, x_kv)
             cross_att_out = self.dropout(cross_att_out)
             cross_att_out += att_out
             att_out = cross_att_out
         
+        att_out = self._average_window_joints(att_out)
+        
+        # FFN
         ffn_out = self.ffn_norm(att_out)
         ffn_out = self.ffn(ffn_out)
         ffn_out = self.dropout(ffn_out)
         ffn_out += att_out
         
-        return ffn_out
+        out = self._reshape(ffn_out, batch=N)
+        
+        return out
 
 class SpatioTemporalAttention(nn.Module):
     
@@ -409,3 +357,76 @@ class SpatioTemporalAttention(nn.Module):
             output = output / factor
         
         return output
+
+
+class TemporalConvolution(nn.Module):
+    def __init__(self, cfg: TemporalConfig) -> None:
+        super().__init__()
+        
+        if cfg.sample == SampleType.UP:
+            raise NotImplemented
+        
+        stride = 1 if cfg.sample == SampleType.NONE else 2
+        
+        self.branches = nn.ModuleList()
+        branch_channels = cfg.out_channels // (len(cfg.branches) + 2)
+        for (window, dilation) in cfg.branches:
+            pad = (window + (window - 1) * (dilation - 1) - 1) // 2
+            self.branches.append(nn.Sequential(
+                LayerNorm2d(cfg.in_channels),
+                nn.Conv2d(cfg.in_channels, branch_channels, kernel_size=1),
+                #LayerNorm2d(branch_channels),
+                nn.GELU(),
+                nn.Conv2d(
+                    branch_channels,
+                    branch_channels,
+                    kernel_size=(window, 1),
+                    stride=(stride, 1),
+                    padding=(pad, 0),
+                    dilation=(dilation, 1)
+                ),
+                #LayerNorm2d(branch_channels),
+            ))
+        
+        # Add MaxPool
+        self.branches.append(nn.Sequential(
+            LayerNorm2d(cfg.in_channels),
+            nn.Conv2d(cfg.in_channels, branch_channels, kernel_size=1),
+            #LayerNorm2d(branch_channels),
+            nn.GELU(),
+            nn.MaxPool2d(kernel_size=(3, 1), stride=(stride, 1), padding=(1, 0)),
+            #LayerNorm2d(branch_channels),
+        ))
+        
+        # Add conv1x1
+        self.branches.append(nn.Sequential(
+            LayerNorm2d(cfg.in_channels),
+            nn.Conv2d(cfg.in_channels, branch_channels, kernel_size=1, stride=(stride, 1)),
+            #LayerNorm2d(branch_channels),
+        ))
+        
+        if cfg.residual:
+            if cfg.in_channels == cfg.out_channels:
+                if stride == 1:
+                    self.residual = nn.Identity()
+                else:
+                    self.residual = nn.Conv2d(cfg.in_channels, cfg.out_channels, kernel_size=(2, 1), stride=(stride, 1))
+            else:
+                if stride == 1:
+                    self.residual = nn.Conv2d(cfg.in_channels, cfg.out_channels, kernel_size=1, stride=1)
+                else:
+                    self.residual = nn.Conv2d(cfg.in_channels, cfg.out_channels, kernel_size=(2, 1), stride=(stride, 1))
+        else:
+            self.residual = lambda _: 0
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        res = self.residual(x)
+        outputs = []
+        for branch in self.branches:
+            out = branch(x)
+            outputs.append(out)
+
+        out = torch.cat(outputs, dim=1)
+        out += res
+        
+        return out

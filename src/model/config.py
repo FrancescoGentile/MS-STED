@@ -3,7 +3,7 @@
 ##
 
 from __future__ import annotations
-from typing import List
+from typing import List, Tuple
 from enum import Enum
 
 from .. import utils
@@ -151,7 +151,7 @@ class EncoderConfig:
             bc.sublayer_dropout = cfg.sublayer_dropout
             bc.out_channels = out_ch
             
-            block = BlockConfig(bc)
+            block = BlockConfig(bc, True, idx == len(cfg.blocks) - 1)
             out_ch = block.in_channels
             self._blocks[idx] = block
     
@@ -196,7 +196,7 @@ class DecoderConfig:
             bc.sublayer_dropout = cfg.sublayer_dropout
             bc.out_channels = out_ch
             
-            block = BlockConfig(bc)
+            block = BlockConfig(bc, False, idx == len(cfg.blocks) - 1)
             out_ch = block.in_channels
             self._blocks[idx] = block
             
@@ -226,7 +226,7 @@ class DecoderConfig:
 
 # Configuration for a block
 class BlockConfig:
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, encoder: bool, last: bool) -> None:
         # Set channels
         if cfg.channels is None:
             raise ValueError('Missing channels field in block config')
@@ -252,7 +252,13 @@ class BlockConfig:
             lc.out_channels = out_ch
             lc.feature_dropout = cfg.feature_dropout
             lc.sublayer_dropout = cfg.sublayer_dropout
-            self._layers.append(LayerConfig(lc))
+            
+            if not last and idx == len(cfg.layers) - 1:
+                sample = SampleType.DOWN if encoder else SampleType.UP
+            else:
+                sample = SampleType.NONE
+            
+            self._layers.append(LayerConfig(lc, sample))
             
     def to_dict(self) -> dict:
         d = {'channels': self._in_channels}
@@ -281,10 +287,15 @@ class CrossViewType(Enum):
     NONE = 'none',
     LARGER = 'larger',
     SMALLER = 'smaller',
+    
+class SampleType(Enum):
+    UP = 0,
+    NONE = 1,
+    DOWN = 2
 
 # Configuration for a layer
 class LayerConfig:
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, sample: SampleType) -> None:
         # Set channels
         self._in_channels = cfg.in_channels
         self._out_channels = cfg.out_channels
@@ -309,14 +320,13 @@ class LayerConfig:
         elif type(cfg.branches) != list:
             raise ValueError('Branches field in layer confif must be a list')
         
-        if self._out_channels % len(cfg.branches) != 0:
-            raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
+        #if self._out_channels % len(cfg.branches) != 0:
+        #    raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
         
         self._branches: List[LayerConfig] = []
         last_prod = -1
         for idx, bc in enumerate(cfg.branches):
             bc.channels = self._in_channels
-            bc.out_channels = self._out_channels // len(cfg.branches)
             bc.num_heads = self._num_heads
             bc.feature_dropout = cfg.feature_dropout
             bc.sublayer_dropout = cfg.sublayer_dropout
@@ -335,6 +345,18 @@ class LayerConfig:
         
         if len(self._branches) == 1 and self._cross_view != CrossViewType.NONE:
             raise ValueError(f'A layer containing only one branch cannot be cross-view')
+        
+        # Set temporal
+        if cfg.temporal is None:
+            raise ValueError('Missing temporal field in layer config')
+        elif type(cfg.temporal) != list:
+            raise ValueError('Temporal field in layer confif must be a list')
+        
+        self._temporal = TemporalConfig(
+            cfg.temporal, 
+            sample,
+            self._in_channels, 
+            self._out_channels)
             
     def to_dict(self) -> dict:
         d = {'cross-view': str(self._cross_view), 
@@ -345,6 +367,7 @@ class LayerConfig:
             branches.append(b.to_dict())
         
         d['branches'] = branches
+        d['temporal'] = self._temporal.to_dict()
         
         return d
             
@@ -363,11 +386,14 @@ class LayerConfig:
     @property
     def branches(self) -> List[BranchConfig]:
         return self._branches
+    
+    @property
+    def temporal(self) -> TemporalConfig:
+        return self._temporal
 
 class BranchConfig:
     def __init__(self, cfg: dict) -> None:
         self._channels = cfg.channels
-        self._out_channels = cfg.out_channels
         self._num_heads = cfg.num_heads
         self._cross_view = cfg.cross_view
         
@@ -405,10 +431,6 @@ class BranchConfig:
         return self._channels
     
     @property
-    def out_channels(self) -> int:
-        return self._out_channels
-    
-    @property
     def num_heads(self) -> int:
         return self._num_heads
     
@@ -431,3 +453,53 @@ class BranchConfig:
     @property
     def structure_dropout(self)-> float:
         return 0.0 # it will be overwritten by the scheduler
+
+class TemporalConfig:
+    def __init__(self, cfg: dict, sample: SampleType, in_channels: int, out_channels: int) -> None:
+        self._sample = sample
+        self._in_channels = in_channels
+        self._out_channels = out_channels
+        
+        self._branches = []
+        for branch in cfg:
+            if branch.window is None:
+                raise ValueError('Missing window field in temporal config')
+            elif type(branch.window) != int:
+                raise ValueError('Window field in temporal config must be an integer')
+            
+            if branch.dilation is None:
+                raise ValueError('Missing dilation field in temporal config')
+            elif type(branch.dilation) != int:
+                raise ValueError('Dilation field in temporal config must be an integer')
+            
+            self._branches.append((branch.window, branch.dilation))
+        
+        if self._out_channels % (len(self._branches) + 2) != 0:
+            raise ValueError('Number of branches in temporal convolution is not valid')
+        
+    def to_dict(self) -> List[dict]:
+        branches = []
+        for (window, dilation) in self._branches:
+            branches.append({'window': window, 'dilation': dilation})
+        
+        return branches
+    
+    @property
+    def residual(self) -> bool:
+        return True
+    
+    @property
+    def sample(self) -> SampleType:
+        return self._sample
+    
+    @property
+    def branches(self) -> List[Tuple[int, int]]:
+        return self._branches
+    
+    @property
+    def in_channels(self) -> int:
+        return self._in_channels
+    
+    @property
+    def out_channels(self) -> int:
+        return self._out_channels

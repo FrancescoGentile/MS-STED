@@ -19,121 +19,142 @@ encoder:
           branches:
             - window: 3
               dilation: 1
-            - window: 3
-              dilation: 2
+            - window: 5
+              dilation: 1
             - window: 3
               dilation: 3
-            - window: 3
-              dilation: 4
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
         - cross_view: 'larger'
           num_heads: 8
           branches:
             - window: 3
               dilation: 1
-            - window: 3
-              dilation: 2
+            - window: 5
+              dilation: 1
             - window: 3
               dilation: 3
-            - window: 3
-              dilation: 4
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
         - num_heads: 8
           branches:
             - window: 3
               dilation: 1
-            - window: 3
-              dilation: 2
+            - window: 5
+              dilation: 1
             - window: 3
               dilation: 3
-            - window: 3
-              dilation: 4
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
     - channels: 128
       layers:
         - num_heads: 8
           branches:
-            - window: 3
+            - window: 5
               dilation: 1
-            - window: 3
+            - window: 5
               dilation: 2
-            - window: 3
+            - window: 5
               dilation: 3
-            - window: 3
-              dilation: 4
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
         - cross_view: 'larger'
           num_heads: 8
           branches:
-            - window: 3
+            - window: 5
               dilation: 1
-            - window: 3
+            - window: 5
               dilation: 2
-            - window: 3
+            - window: 5
               dilation: 3
-            - window: 3
-              dilation: 4
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
         - num_heads: 8
           branches:
-            - window: 3
+            - window: 5
               dilation: 1
-            - window: 3
+            - window: 5
               dilation: 2
-            - window: 3
+            - window: 5
               dilation: 3
-            - window: 3
-              dilation: 4
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+    - channels: 128
+      layers:
+        - cross_view: 'smaller'
+          num_heads: 8
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+decoder:
+  blocks:
     - channels: 256
       layers:
         - num_heads: 8
           branches:
             - window: 3
               dilation: 1
-            - window: 3
-              dilation: 2
-            - window: 3
-              dilation: 3
-            - window: 3
-              dilation: 4
-        - cross_view: 'smaller'
-          num_heads: 8
-          branches:
-            - window: 3
+          temporal: 
+            - window: 5
               dilation: 1
-            - window: 3
+            - window: 5
               dilation: 2
-            - window: 3
-              dilation: 3
-            - window: 3
-              dilation: 4
-        - num_heads: 8
-          branches:
-            - window: 3
-              dilation: 1
-            - window: 3
-              dilation: 2
-            - window: 3
-              dilation: 3
-            - window: 3
-              dilation: 4
-decoder:
-  blocks:
     - channels: 128
       layers:
         - num_heads: 8
           branches:
             - window: 3
               dilation: 1
-    - channels: 96
-      layers:
-        - num_heads: 8
-          branches:
-            - window: 3
+          temporal: 
+            - window: 5
               dilation: 1
+            - window: 5
+              dilation: 2
     - channels: 64
       layers:
         - num_heads: 8
           branches:
             - window: 3
               dilation: 1
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
         - num_heads: 8
           branches:
             - window: 5
               dilation: 1
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
               

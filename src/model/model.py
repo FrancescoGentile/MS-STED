@@ -17,17 +17,8 @@ class Encoder(nn.Module):
         self._save_interm = save_intermediates
         
         self.blocks = nn.ModuleList()
-        
-        for idx, block_cfg in enumerate(config.blocks):
-            mdict = nn.ModuleDict()
-            mdict['block'] = Block(block_cfg)
-            
-            if idx < len(config.blocks) - 1:
-                mdict['pool'] = AttentionPool(2, block_cfg.out_channels)
-            else:
-                mdict['pool'] = None
-            
-            self.blocks.append(mdict)
+        for block_cfg in config.blocks:
+            self.blocks.append(Block(block_cfg))
         
     @property
     def save_intermediates(self) -> bool:
@@ -46,14 +37,12 @@ class Encoder(nn.Module):
         
         # Apply blocks
         for block in self.blocks:
-            tmp = block['block'](x)
-            if block['pool'] is not None:
-                x = block['pool'](tmp)
+            x = block(x)
             
             if self.save_intermediates:
-                output.append(tmp)
+                output.append(x)
             else:
-                output = tmp
+                output = x
 
         return output
     
