@@ -188,7 +188,16 @@ class Branch(nn.Module):
         
         return x
     
-    def _reshape(self, x: torch.Tensor, batch: int) -> torch.Tensor:
+    def _flatten(self, x: torch.Tensor) -> torch.Tensor:
+        N, C, T, V = x.shape
+        # (N, T, V, C)
+        x = x.permute(0, 2, 3, 1).contiguous()
+        # (N * T, V, C)
+        x = x.view(N * T, V, C)
+        
+        return x
+    
+    def _unflatten(self, x: torch.Tensor, batch: int) -> torch.Tensor:
         _, V, C = x.shape
         # (N, T, V, C)
         x = x.view(batch, -1, V, C)
@@ -201,22 +210,21 @@ class Branch(nn.Module):
         N, _, _, _ = x.shape
         
         # Attention
-        x = self._group_window_joints(x)
-        norm_x = self.first_norm(x)
+        window_x = self._group_window_joints(x)
+        norm_x = self.first_norm(window_x)
         att_out = self.attention(norm_x, norm_x)
+        att_out = self._average_window_joints(att_out)
         att_out = self.dropout(att_out)
-        att_out += x
+        att_out += self._flatten(x)
         
         if cross_x is not None:
-            x_q = self.second_norm(att_out)
-            cross_x = self._group_window_joints(cross_x)
-            x_kv = self.cross_norm(cross_x)
+            x_q = self.second_norm(self._group_window_joints(self._unflatten(att_out, N)))
+            x_kv = self.cross_norm(self._group_window_joints(cross_x))
             cross_att_out = self.cross_attention(x_q, x_kv)
+            cross_att_out = self._average_window_joints(cross_att_out)
             cross_att_out = self.dropout(cross_att_out)
             cross_att_out += att_out
             att_out = cross_att_out
-        
-        att_out = self._average_window_joints(att_out)
         
         # FFN
         ffn_out = self.ffn_norm(att_out)
@@ -224,7 +232,7 @@ class Branch(nn.Module):
         ffn_out = self.dropout(ffn_out)
         ffn_out += att_out
         
-        out = self._reshape(ffn_out, batch=N)
+        out = self._unflatten(ffn_out, batch=N)
         
         return out
 
