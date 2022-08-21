@@ -73,7 +73,7 @@ class TrainingProcessor:
                 yaml.dump(self._config.to_dict(), f, default_flow_style=False, sort_keys=False, Dumper=utils.NoAliasDumper)
             
             with open(self._config.model_file, 'w', newline='') as f:
-                yaml.safe_dump(self._config.model.to_dict(True), f, default_flow_style=False, sort_keys=False)
+                yaml.dump(self._config.model.to_dict(True), f, default_flow_style=False, sort_keys=False, Dumper=utils.NoAliasDumper)
     
     def start(self):
         if self._config.distributed.is_master():

@@ -3,7 +3,7 @@
 ##
 
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from enum import Enum
 
 from .. import utils
@@ -17,34 +17,15 @@ class ModelConfig:
             raise ValueError('Missing architecture field in model config')
         model_cfg = utils.load_config_file(cfg.architecture)
         
-        self._sublayer_dropout = model_cfg.sublayer_dropout
-        if self._sublayer_dropout is None:
-            self._sublayer_dropout = 0.0
-        
-        self._feature_dropout = model_cfg.feature_dropout
-        if self._feature_dropout is None:
-            self._feature_dropout = 0.0
-        
-        if model_cfg.structure_dropout is not None:
-            self._structure_dropout_start = float(model_cfg.structure_dropout.start)
-            self._structure_dropout_end = float(model_cfg.structure_dropout.end)
-            self._structure_dropout_warmup = int(model_cfg.structure_dropout.warmup)
-            
-        self._structure_dropout = model_cfg.structure_dropout
-        if self._structure_dropout is None:
-            self._structure_dropout = 0.0
+        self._dropout = DropoutConfig(model_cfg.dropout)
         
         if model_cfg.encoder is None:
             raise ValueError('Missing encoder field in model config')
-        model_cfg.encoder.feature_dropout = self._feature_dropout
-        model_cfg.encoder.sublayer_dropout = self._sublayer_dropout
-        self._encoder = EncoderConfig(model_cfg.encoder)
+        self._encoder = EncoderConfig(model_cfg.encoder, self._dropout)
         
         if model_cfg.decoder is None:
             raise ValueError('Missing decoder field in model config')
-        model_cfg.decoder.feature_dropout = self._feature_dropout
-        model_cfg.decoder.sublayer_dropout = self._sublayer_dropout
-        self._decoder = DecoderConfig(model_cfg.decoder, self._encoder)
+        self._decoder = DecoderConfig(model_cfg.decoder, self._encoder, self._dropout)
         
         if model_cfg.embeddings is None:
             raise ValueError('Missing embeddings field in model config')
@@ -55,9 +36,7 @@ class ModelConfig:
         
         if architecture:
             d.update({
-                'sublayer_dropout': self._sublayer_dropout,
-                'feature_dropout': self._feature_dropout,
-                'structure_dropout': self._structure_dropout,
+                'dropout': self._dropout.to_dict(),
                 'embeddings': self._embeddings.to_dict(),
                 'encoder': self._encoder.to_dict(),
                 'decoder': self._decoder.to_dict()
@@ -82,24 +61,8 @@ class ModelConfig:
         return self._decoder
     
     @property
-    def sublayer_dropout(self) -> float:
-        return self._sublayer_dropout
-    
-    @property
-    def feature_dropout(self) -> float:
-        return self._feature_dropout
-    
-    @property
-    def structure_dropout_start(self) -> float:
-        return self._structure_dropout_start
-    
-    @property
-    def structure_dropout_end(self) -> float:
-        return self._structure_dropout_end
-    
-    @property
-    def structure_dropout_warmup(self) -> int:
-        return self._structure_dropout_warmup
+    def dropout(self) -> DropoutConfig:
+        return self._dropout
 
 # Configuration for embeddings
 class EmbeddingsConfig:
@@ -138,7 +101,7 @@ class EmbeddingsConfig:
 
 # Configuration for encoder
 class EncoderConfig:
-    def __init__(self, cfg: dict) -> None:
+    def __init__(self, cfg: dict, dropout: DropoutConfig) -> None:
         if cfg.blocks is None:
             raise ValueError('Missing blocks field in encoder config')
         elif type(cfg.blocks) != list:
@@ -147,11 +110,9 @@ class EncoderConfig:
         self._blocks: List[BlockConfig] = [None] * len(cfg.blocks)
         out_ch = -1
         for idx, bc in reversed(list(enumerate(cfg.blocks))):
-            bc.feature_dropout = cfg.feature_dropout
-            bc.sublayer_dropout = cfg.sublayer_dropout
             bc.out_channels = out_ch
             
-            block = BlockConfig(bc, True, idx == len(cfg.blocks) - 1)
+            block = BlockConfig(bc, True, idx == len(cfg.blocks) - 1, dropout)
             out_ch = block.in_channels
             self._blocks[idx] = block
     
@@ -181,7 +142,7 @@ class EncoderConfig:
 
 # Configuration for decoder
 class DecoderConfig:
-    def __init__(self, cfg: dict, encoder: EncoderConfig) -> None:
+    def __init__(self, cfg: dict, encoder: EncoderConfig, dropout: DropoutConfig) -> None:
         if cfg.blocks is None:
             raise ValueError('Missing blocks field in decoder config')
         elif type(cfg.blocks) != list:
@@ -192,11 +153,9 @@ class DecoderConfig:
         self._blocks: List[BlockConfig] = [None] * len(cfg.blocks)
         out_ch = -1
         for idx, bc in reversed(list(enumerate(cfg.blocks))):
-            bc.feature_dropout = cfg.feature_dropout
-            bc.sublayer_dropout = cfg.sublayer_dropout
             bc.out_channels = out_ch
             
-            block = BlockConfig(bc, False, idx == len(cfg.blocks) - 1)
+            block = BlockConfig(bc, False, idx == len(cfg.blocks) - 1, dropout)
             out_ch = block.in_channels
             self._blocks[idx] = block
             
@@ -226,7 +185,7 @@ class DecoderConfig:
 
 # Configuration for a block
 class BlockConfig:
-    def __init__(self, cfg: dict, encoder: bool, last: bool) -> None:
+    def __init__(self, cfg: dict, encoder: bool, last: bool, dropout: DropoutConfig) -> None:
         # Set channels
         if cfg.channels is None:
             raise ValueError('Missing channels field in block config')
@@ -248,17 +207,14 @@ class BlockConfig:
         for idx, lc in enumerate(cfg.layers):
             if idx == len(cfg.layers) - 1:
                 out_ch = self.out_channels
-            lc.in_channels = in_ch
-            lc.out_channels = out_ch
-            lc.feature_dropout = cfg.feature_dropout
-            lc.sublayer_dropout = cfg.sublayer_dropout
             
             if not last and idx == len(cfg.layers) - 1:
                 sample = SampleType.DOWN if encoder else SampleType.UP
             else:
                 sample = SampleType.NONE
             
-            self._layers.append(LayerConfig(lc, sample))
+            self._layers.append(LayerConfig(
+                lc, in_ch, out_ch, sample, dropout))
             
     def to_dict(self) -> dict:
         d = {'channels': self._in_channels}
@@ -284,21 +240,27 @@ class BlockConfig:
         return self._layers
 
 class CrossViewType(Enum):
-    NONE = 'none',
-    LARGER = 'larger',
-    SMALLER = 'smaller',
+    NONE = 'none'
+    LARGER = 'larger'
+    SMALLER = 'smaller'
     
 class SampleType(Enum):
-    UP = 0,
-    NONE = 1,
+    UP = 0
+    NONE = 1
     DOWN = 2
 
 # Configuration for a layer
 class LayerConfig:
-    def __init__(self, cfg: dict, sample: SampleType) -> None:
+    def __init__(self, 
+                 cfg: dict, 
+                 in_channels: int,
+                 out_channels: int,
+                 sample: SampleType, 
+                 dropout: DropoutConfig) -> None:
         # Set channels
-        self._in_channels = cfg.in_channels
-        self._out_channels = cfg.out_channels
+        self._in_channels = in_channels
+        self._out_channels = out_channels
+        self._dropout = dropout
         
         # Set cross view
         if cfg.cross_view is None:
@@ -320,23 +282,26 @@ class LayerConfig:
         elif type(cfg.branches) != list:
             raise ValueError('Branches field in layer confif must be a list')
         
-        #if self._out_channels % len(cfg.branches) != 0:
-        #    raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
+        if self._in_channels % len(cfg.branches) != 0:
+            raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
         
         self._branches: List[LayerConfig] = []
         last_prod = -1
+        branch_channels = self._in_channels // len(cfg.branches)
         for idx, bc in enumerate(cfg.branches):
-            bc.channels = self._in_channels
-            bc.num_heads = self._num_heads
-            bc.feature_dropout = cfg.feature_dropout
-            bc.sublayer_dropout = cfg.sublayer_dropout
             if (idx == 0 and self._cross_view == CrossViewType.LARGER) or \
                 (idx == (len(cfg.branches) - 1) and self._cross_view == CrossViewType.SMALLER):
-                bc.cross_view = False
+                cross_view = False
             else:
-                bc.cross_view = self._cross_view != CrossViewType.NONE
+                cross_view = self._cross_view != CrossViewType.NONE
             
-            branch = BranchConfig(bc)
+            branch = BranchConfig(
+                bc,
+                self._in_channels,
+                branch_channels,
+                self._num_heads,
+                cross_view,
+                dropout)
             if branch.window * branch.dilation < last_prod:
                 raise ValueError(f'Branches must be listed in ascending order of size') 
             else:
@@ -356,10 +321,11 @@ class LayerConfig:
             cfg.temporal, 
             sample,
             self._in_channels, 
-            self._out_channels)
+            self._out_channels,
+            dropout)
             
     def to_dict(self) -> dict:
-        d = {'cross-view': str(self._cross_view), 
+        d = {'cross-view': str(self._cross_view.value), 
              'num-heads': self._num_heads}
         
         branches = []
@@ -390,12 +356,23 @@ class LayerConfig:
     @property
     def temporal(self) -> TemporalConfig:
         return self._temporal
+    
+    @property
+    def dropout(self) -> DropoutConfig:
+        return self._dropout
 
 class BranchConfig:
-    def __init__(self, cfg: dict) -> None:
-        self._channels = cfg.channels
-        self._num_heads = cfg.num_heads
-        self._cross_view = cfg.cross_view
+    def __init__(self, 
+                 cfg: dict,
+                 in_channels: int,
+                 channels: int,
+                 num_heads: int,
+                 cross_view: bool,
+                 dropout: DropoutConfig) -> None:
+        self._in_channels = in_channels
+        self._channels = channels
+        self._num_heads = num_heads
+        self._cross_view = cross_view
         
         # Set window
         if cfg.window is None:
@@ -413,8 +390,7 @@ class BranchConfig:
         
         self._dilation = cfg.dilation
         
-        self._feature_dropout = cfg.feature_dropout
-        self._sublayer_dropout = cfg.sublayer_dropout
+        self._dropout = dropout
         
     def to_dict(self) -> dict:
         d = {'window': self._window,
@@ -425,6 +401,10 @@ class BranchConfig:
     @property
     def cross_view(self) -> bool:
         return self._cross_view
+    
+    @property
+    def in_channels(self) -> int:
+        return self._in_channels
         
     @property
     def channels(self) -> int:
@@ -443,22 +423,20 @@ class BranchConfig:
         return self._dilation
     
     @property
-    def feature_dropout(self) -> float:
-        return self._feature_dropout
-    
-    @property
-    def sublayer_dropout(self) -> float:
-        return self._sublayer_dropout
-    
-    @property
-    def structure_dropout(self)-> float:
-        return 0.0 # it will be overwritten by the scheduler
+    def dropout(self) -> DropoutConfig:
+        return self._dropout
 
 class TemporalConfig:
-    def __init__(self, cfg: dict, sample: SampleType, in_channels: int, out_channels: int) -> None:
+    def __init__(self, 
+                 cfg: dict, 
+                 sample: SampleType, 
+                 in_channels: int, 
+                 out_channels: int, 
+                 dropout: DropoutConfig) -> None:
         self._sample = sample
         self._in_channels = in_channels
         self._out_channels = out_channels
+        self._dropout = dropout
         
         self._branches = []
         for branch in cfg:
@@ -503,3 +481,88 @@ class TemporalConfig:
     @property
     def out_channels(self) -> int:
         return self._out_channels
+    
+    @property
+    def dropout(self) -> DropoutConfig:
+        return self._dropout
+
+class DropoutConfig:
+    def __init__(self, cfg: Optional[dict]) -> None:
+        if cfg is None:
+            self._sublayer = 0.0
+            self._feature = 0.0
+            self._layer = 0.0
+            self._head = DropHeadConfig(None)
+        else:
+            if cfg.sublayer is None:
+                self._sublayer = 0.0
+            else:
+                self._sublayer = float(cfg.sublayer)
+                
+            if cfg.feature is None:
+                self._feature = 0.0
+            else:
+                self._feature = float(cfg.feature)
+            
+            if cfg.layer is None:
+                self._layer = 0.0
+            else:
+                self._layer = float(cfg.layer)
+            
+            self._head = DropHeadConfig(cfg.head)
+    
+    def to_dict(self) -> dict:
+        d = {'sublayer': self._sublayer,
+             'feature': self._feature,
+             'layer': self._layer,
+             'head': self._head.to_dict()}
+        
+        return d
+    
+    @property
+    def sublayer(self) -> float:
+        return self._sublayer
+    
+    @property
+    def feature(self) -> float:
+        return self._feature
+    
+    @property
+    def layer(self) -> float:
+        return self._layer
+    
+    @property
+    def head(self) -> DropHeadConfig:
+        return self._head
+    
+class DropHeadConfig:
+    def __init__(self, cfg: Optional[dict]) -> None:
+        if cfg is None:
+            self._start = 0.0
+            self._end = 0.0
+            self._warmup = 0
+        else:
+            self._start =  float(cfg.start)
+            self._end = float(cfg.end)
+            self._warmup = int(cfg.warmup)
+        
+    def to_dict(self) -> dict:
+        d = {
+            'start': self._start,
+            'end': self._end,
+            'warmup': self._warmup
+        }
+        
+        return d
+    
+    @property
+    def start(self) -> float:
+        return self._start
+    
+    @property
+    def end(self) -> float:
+        return self._end
+    
+    @property
+    def warmup(self) -> int:
+        return self._warmup

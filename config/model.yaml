@@ -2,12 +2,14 @@
 ##
 ##
 
-sublayer_dropout: 0.2
-feature_dropout: 0.1
-structure_dropout:
-  start: 0.2
-  end: 0.2
-  warmup: 8
+dropout:
+  sublayer: 0.2
+  feature: 0.1
+  layer: 0.2
+  head:
+    start: 0.2
+    end: 0.2
+    warmup: 8
 embeddings:
   temporal_channels: 64
   type_channels: 5
@@ -15,41 +17,35 @@ encoder:
   blocks:
     - channels: 64
       layers:
-        - num_heads: 8
+        - num_heads: 2
           branches:
-            - window: 3
-              dilation: 1
             - window: 5
               dilation: 1
-            - window: 3
-              dilation: 3
+            - window: 5
+              dilation: 2
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+        - num_heads: 2
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
           temporal: 
             - window: 5
               dilation: 1
             - window: 5
               dilation: 2
         - cross_view: 'larger'
-          num_heads: 8
+          num_heads: 2
           branches:
-            - window: 3
-              dilation: 1
-            - window: 5
-              dilation: 1
-            - window: 3
-              dilation: 3
-          temporal: 
             - window: 5
               dilation: 1
             - window: 5
               dilation: 2
-        - num_heads: 8
-          branches:
-            - window: 3
-              dilation: 1
-            - window: 5
-              dilation: 1
-            - window: 3
-              dilation: 3
           temporal: 
             - window: 5
               dilation: 1
@@ -57,8 +53,10 @@ encoder:
               dilation: 2
     - channels: 128
       layers:
-        - num_heads: 8
+        - num_heads: 4
           branches:
+            - window: 1
+              dilation: 1
             - window: 5
               dilation: 1
             - window: 5
@@ -71,8 +69,10 @@ encoder:
             - window: 5
               dilation: 2
         - cross_view: 'larger'
-          num_heads: 8
+          num_heads: 4
           branches:
+            - window: 1
+              dilation: 1
             - window: 5
               dilation: 1
             - window: 5
@@ -84,24 +84,27 @@ encoder:
               dilation: 1
             - window: 5
               dilation: 2
+        - num_heads: 4
+          branches:
+            - window: 1
+              dilation: 1
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+          temporal: 
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+    - channels: 256
+      layers:
         - num_heads: 8
           branches:
-            - window: 5
+            - window: 1
               dilation: 1
-            - window: 5
-              dilation: 2
-            - window: 5
-              dilation: 3
-          temporal: 
-            - window: 5
-              dilation: 1
-            - window: 5
-              dilation: 2
-    - channels: 128
-      layers:
-        - cross_view: 'smaller'
-          num_heads: 8
-          branches:
             - window: 5
               dilation: 1
             - window: 5

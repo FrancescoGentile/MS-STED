@@ -12,55 +12,58 @@ class NTUSkeletonGraph(SkeletonGraph):
         
         self._num_joints = 25
         
-        links = [(1, 2), (2, 21), (3, 21), (4, 3), (5, 21),
-                 (6, 5), (7, 6), (8, 7), (9, 21), (10, 9),
-                 (11, 10), (12, 11), (13, 1), (14, 13), (15, 14),
-                 (16, 15), (17, 1), (18, 17), (19, 18), (20, 19),
-                 (22, 23), (23, 8), (24, 25), (25, 12)]
-
-        self_links = [(i, i) for i in range(self._num_joints)]
-        edges = [(i - 1, j - 1) for (i, j) in links]
-        self._edges = edges + self_links
-        
-        connections = np.array([(1, 2), (2, 2), (3, 21), (4, 3), (5, 21), 
-                                (6, 5), (7, 6), (8, 7), (9, 21), (10, 9), 
-                                (11, 10), (12, 11), (13, 1), (14, 13), (15, 14), 
-                                (16, 15), (17, 1), (18, 17), (19, 18), (20, 19), 
-                                (21, 2), (22, 23), (23, 8), (24, 25), (25, 12)])
-        self._connections = connections - (1, 1)
-        
-        self._adjacency = self._get_adjacency_matrix()
-        self._laplacian = self._get_laplacian()
+        #links = [(1, 2), (2, 21), (3, 21), (4, 3), (5, 21),
+        #         (6, 5), (7, 6), (8, 7), (9, 21), (10, 9),
+        #         (11, 10), (12, 11), (13, 1), (14, 13), (15, 14),
+        #         (16, 15), (17, 1), (18, 17), (19, 18), (20, 19),
+        #         (22, 23), (23, 8), (24, 25), (25, 12)]
+        #
+        #self._edges = [(i - 1, j - 1) for (i, j) in links]
+        #bones = np.array([
+        #    (1, 2), (2, 2), (3, 21), (4, 3), (5, 21), 
+        #    (6, 5), (7, 6), (8, 7), (9, 21), (10, 9), 
+        #    (11, 10), (12, 11), (13, 1), (14, 13), (15, 14), 
+        #    (16, 15), (17, 1), (18, 17), (19, 18), (20, 19), 
+        #    (21, 2), (22, 23), (23, 8), (24, 25), (25, 12)])
+        #self._bones = bones - (1, 1)
+         
+        bones = np.array([
+            (2, 1), (1, 13), (1, 17), (13, 14), (14, 15),
+            (15, 16), (17, 18), (18, 19), (19, 20), (2, 21),
+            (21, 3), (3, 4), (21, 9), (9, 10), (10, 11),
+            (11, 12), (12, 24), (12, 25), (21, 5), (5, 6),
+            (6, 7), (7, 8), (8, 22), (8, 23)
+        ])
+        self._bones = bones - (1, 1)
     
-    def _get_adjacency_matrix(self) -> np.ndarray:
+    def joints_adjacency(self, self_edges: bool) -> np.ndarray:
         adj = np.zeros((self._num_joints, self._num_joints))
-        for i, j in self._edges:
-            adj[j, i] = 1
-            adj[i, j] = 1
+        for (i, j) in self._bones:
+            adj[i, j] = adj[j, i] = 1
+            
+        if self_edges:
+            adj = adj + np.identity(self._num_joints)
         
         return adj
     
-    def _get_laplacian(self) -> np.ndarray:
-        identity = np.identity(self._num_joints)
+    def joints_bones_adjacency(self, self_edges: bool) -> np.ndarray:
+        J = self._num_joints
+        B = len(self._bones)
         
-        degree = self._adjacency.sum(-1)
-        degree_inv_sqrt = np.power(degree, -0.5)
-        inv_degree_matrix = np.identity(self._num_joints) * degree_inv_sqrt
-        norm_adj = (inv_degree_matrix @ self._adjacency @ inv_degree_matrix)
+        adj = np.zeros((J + B, J + B))
+        adj[:J, :J] = self.joints_adjacency(False)
         
-        laplacian: np.ndarray = identity - norm_adj
+        for idx, (u, v) in enumerate(self._bones):
+            adj[u, J + idx] = 1
+            adj[J + idx, u] = 1
+            adj[v, J + idx] = 1
+            adj[J + idx, v] = 1
         
-        return laplacian
+        if self_edges:
+            adj = adj+ np.identity(J + B)
+        
+        return adj
     
-    @property
-    def adjacency_matrix(self) -> np.ndarray:
-        return self._adjacency
-    
-    @property
-    def laplacian_matrix(self) -> np.ndarray:
-        return self._laplacian
-    
-    @property
-    def joints_connections(self) -> np.ndarray:
-        return self._connections
+    def bones(self) -> np.ndarray:
+        return self._bones
     

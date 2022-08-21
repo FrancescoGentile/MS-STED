@@ -24,7 +24,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torchmetrics
 
-from ..model.dropout import StructureDropoutScheduler
+from ..model.dropout import DropHeadScheduler
 from ..model.embeddings import Embeddings
 from ..model.model import Classifier, Encoder, ClassificationModel, Decoder, Reconstructor, Discriminator, ReconstructorDiscriminatorModel
 from ..dataset.dataset import Dataset
@@ -151,22 +151,23 @@ class ClassificationProcessor:
         channels = self._train_dataset.channels
         num_classes = self._train_dataset.num_classes
         num_frames = self._train_dataset.num_frames
+        model_cfg = self._config.model
         
-        embeddings = Embeddings(self._config.model.embeddings, channels, num_frames, skeleton)
-        encoder = Encoder(self._config.model.encoder, False)
+        embeddings = Embeddings(model_cfg.embeddings, channels, num_frames, skeleton)
+        encoder = Encoder(model_cfg.encoder, skeleton, False)
         if self._config.pretrain_weights is not None:
             decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
-            reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels)
-            discriminator = Discriminator(self._config.model.decoder.out_channels)
+            reconstructor = Reconstructor(model_cfg.decoder.out_channels, channels, model_cfg.dropout)
+            discriminator = Discriminator(model_cfg.decoder.out_channels, model_cfg.dropout)
             model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)
             
             state_dict = torch.load(self._config.pretrain_weights, map_location=self._device)
             model.load_state_dict(state_dict)
         
-        classifier = Classifier(self._config.model.encoder.out_channels, num_classes, self._config.model.feature_dropout) 
+        classifier = Classifier(model_cfg.encoder.out_channels, num_classes, model_cfg.dropout) 
         model = ClassificationModel(embeddings, encoder, classifier)
         
-        self._logger.info(f'Model: {self._config.model.name}')
+        self._logger.info(f'Model: {model_cfg.name}')
         self._save_model_description(model)
         
         if self._checkpoint is not None: 
@@ -176,7 +177,10 @@ class ClassificationProcessor:
         model = model.to(self._device)
         gpu_id = self._config.distributed.get_gpu_id()
         devices_ids = [gpu_id] if gpu_id is not None else None
-        self._model = DDP(model, device_ids=devices_ids)
+        self._model = DDP(
+            model, 
+            device_ids=devices_ids, 
+            find_unused_parameters=model_cfg.dropout.layer > 0.0)
     
     def _save_model_description(self, model: nn.Module):
         if self._config.distributed.is_local_master():
@@ -221,11 +225,9 @@ class ClassificationProcessor:
         if self._checkpoint is not None:
             start_epoch = self._checkpoint['start_epoch']
         
-        self._dropout_scheduler = StructureDropoutScheduler(
+        self._dropout_scheduler = DropHeadScheduler(
             modules=self._model.modules(),
-            start=self._config.model.structure_dropout_start,
-            end=self._config.model.structure_dropout_end,
-            warmup=self._config.model.structure_dropout_warmup,
+            config=self._config.model.dropout.head,
             num_epochs=self._config.num_epochs,
             steps_per_epoch=self._get_steps_per_epoch(eval=False),
             start_epoch=start_epoch
@@ -246,7 +248,8 @@ class ClassificationProcessor:
                 if phase == 'train':
                     wandb.run.define_metric(f'classification/{phase}/learning_rate', step_metric=epoch, summary='none')
                 
-                summaries = ['min'] + ['max'] * 5
+                # f1_score, loss, precision, recall, top1_acc, top5_acc
+                summaries = ['max', 'min', 'max', 'max', 'max', 'max', 'max']
                 for name, summary in zip(metr.keys(), summaries):
                     wandb.run.define_metric(f'classification/{phase}/{name}', step_metric=epoch, summary=summary)
     
@@ -268,13 +271,16 @@ class ClassificationProcessor:
             'precision': torchmetrics.Precision(num_classes=num_classes, average='micro', top_k=1),
             'recall': torchmetrics.Recall(num_classes=num_classes, average='micro', top_k=1),
             'f1_score': torchmetrics.F1Score(num_classes=num_classes, average='micro', top_k=1),
-            'confusion': torchmetrics.ConfusionMatrix(num_classes=num_classes)
         }).to(self._device)
         
         self._logger.info('Loss function used: CrossEntropyLoss')
         
         self._init_metrics_file()
         self._init_wandb_metrics()
+        
+        # Confusion matrix does not have to be logged in wandb
+        self._eval_metrics.add_metrics({
+            'confusion': torchmetrics.ConfusionMatrix(num_classes=num_classes).to(self._device)})
         
     def _log_metrics(self, epoch: int, time: float, speed: float, train: bool, lr: Optional[Tuple[float, float]] = None):
         metrics_dict = self._train_metrics.compute() \

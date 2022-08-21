@@ -7,23 +7,22 @@ from typing import List
 
 import torch.nn as nn
 
+from .config import DropHeadConfig
 from .modules import SpatioTemporalAttention
 
-class StructureDropoutScheduler:
+class DropHeadScheduler:
     def __init__(self, 
                  modules: List[nn.Module], 
-                 start: float,
-                 end: float,
+                 config: DropHeadConfig,
                  num_epochs: int, 
                  steps_per_epoch: int,
-                 warmup: int = 8,
                  start_epoch: int = 0) -> None:
         
         self._num_steps = num_epochs * steps_per_epoch
-        self._change_step = math.floor(self._num_steps / warmup) if warmup != 0 else 0
-        self._start = start
-        self._delta1 = start / self._change_step
-        self._delta2 = end / (self._num_steps - self._change_step)
+        self._change_step = math.floor(self._num_steps / config.warmup) if config.warmup != 0 else 0
+        self._start = config.start
+        self._delta1 = config.start / self._change_step
+        self._delta2 = config.end / (self._num_steps - self._change_step)
         self._step = start_epoch * steps_per_epoch
         
         current_p = self._compute_dropout()
@@ -31,7 +30,7 @@ class StructureDropoutScheduler:
         for m in modules:
             if isinstance(m, SpatioTemporalAttention):
                 self._modules.append(m)
-                m.structure_dropout = current_p
+                m.drop_head = current_p
     
     def _compute_dropout(self) -> float:
         if self._step >= self._change_step:
@@ -46,4 +45,4 @@ class StructureDropoutScheduler:
         self._step += 1
         current_p = self._compute_dropout()
         for m in self._modules:
-            m.structure_dropout = current_p
+            m.drop_head = current_p

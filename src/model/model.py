@@ -6,19 +6,22 @@ from typing import List, Tuple, Union
 import torch 
 import torch.nn as nn
 
-from .config import DecoderConfig, EncoderConfig
+from .config import DecoderConfig, DropoutConfig, EncoderConfig
 from .embeddings import Embeddings
-from .modules import Block, AttentionPool
+from .modules import Block
+from ..dataset.skeleton import SkeletonGraph
 
 class Encoder(nn.Module):
-    def __init__(self, config: EncoderConfig, save_intermediates: bool = False) -> None:
+    def __init__(self, config: EncoderConfig, 
+                 skeleton: SkeletonGraph, 
+                 save_intermediates: bool = False) -> None:
         super().__init__()
         
         self._save_interm = save_intermediates
         
         self.blocks = nn.ModuleList()
         for block_cfg in config.blocks:
-            self.blocks.append(Block(block_cfg))
+            self.blocks.append(Block(block_cfg, skeleton))
         
     @property
     def save_intermediates(self) -> bool:
@@ -50,10 +53,10 @@ class Classifier(nn.Module):
     def __init__(self, 
                  in_channels: int,
                  num_classes: int,
-                 dropout: float) -> None:
+                 dropout: DropoutConfig) -> None:
         super().__init__()
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout.feature)
         self.fc = nn.Linear(in_channels, num_classes)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -78,9 +81,10 @@ class ClassificationModel(nn.Module):
     
     def forward(self, joints: torch.Tensor, bones: torch.Tensor) -> torch.Tensor:
         # Change shape: (N, C, T, V, M) -> (N * M, C, T, V)
-        N, C, T, V, M = joints.shape
-        j = joints.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
-        b = bones.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
+        N, C, T, J, M = joints.shape
+        _, _, _, B, _ = bones.shape
+        j = joints.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, J)
+        b = bones.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, B)
         
         # Apply embeddings
         x: torch.Tensor = self.embeddings(j, b)
@@ -124,10 +128,10 @@ class Decoder(nn.Module):
         return out
 
 class Discriminator(nn.Module):
-    def __init__(self, in_channels: int, dropout: float = 0.1) -> None:
+    def __init__(self, in_channels: int, dropout: DropoutConfig) -> None:
         super().__init__()
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout.feature)
         self.conv = nn.Conv2d(in_channels, 1, kernel_size=1)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -137,10 +141,10 @@ class Discriminator(nn.Module):
         return out
 
 class Reconstructor(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, dropout: float = 0.1) -> None:
+    def __init__(self, in_channels: int, out_channels: int, dropout: DropoutConfig) -> None:
         super().__init__()
         
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout.feature)
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -150,7 +154,12 @@ class Reconstructor(nn.Module):
         return out
 
 class ReconstructorDiscriminatorModel(nn.Module):
-    def __init__(self, embeddings: Embeddings, encoder: Encoder, decoder: Decoder, reconstructor: Reconstructor, discriminator: Discriminator) -> None:
+    def __init__(self, 
+                 embeddings: Embeddings, 
+                 encoder: Encoder, 
+                 decoder: Decoder, 
+                 reconstructor: Reconstructor, 
+                 discriminator: Discriminator) -> None:
         super().__init__()
         
         self.embeddings = embeddings
@@ -163,9 +172,9 @@ class ReconstructorDiscriminatorModel(nn.Module):
         
     def forward(self, joints: torch.Tensor, bones: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # Change shape: (N, C, T, V, M) -> (N * M, C, T, V)
-        N, C, T, V, M = joints.shape
-        B = bones.shape[3]
-        j = joints.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
+        N, C, T, J, M = joints.shape
+        _, _, _, B, _ = bones.shape
+        j = joints.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, J)
         b = bones.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, B)
         
         # Apply embeddings
@@ -187,7 +196,7 @@ class ReconstructorDiscriminatorModel(nn.Module):
         disc_out = disc_out.view(N, -1, T, U)
         disc_out = disc_out.permute(0, 2, 3, 1).contiguous()
         
-        jr, br = recon_out[:, :, :, :V], recon_out[:, :, :, V:]
-        jd, bd = disc_out[:, :, :V], disc_out[:, :, V:]
+        jr, br = recon_out[:, :, :, :J], recon_out[:, :, :, J:]
+        jd, bd = disc_out[:, :, :J], disc_out[:, :, J:]
         
         return jr, jd, br, bd

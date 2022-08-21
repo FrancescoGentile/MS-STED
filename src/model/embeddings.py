@@ -6,8 +6,9 @@ from typing import Tuple
 import torch 
 import torch.nn as nn
 from torch.nn.parameter import Parameter
-from scipy.linalg import eig
 import math
+import scipy.sparse.csgraph
+import scipy.linalg
 
 from .config import EmbeddingsConfig
 from ..dataset.skeleton import SkeletonGraph
@@ -40,8 +41,9 @@ class Embeddings(nn.Module):
         self.embed_proj = nn.Conv2d(total_channels, config.out_channels, kernel_size=1)
     
     def _get_id_embeddings(self) -> Tuple[torch.Tensor, int]:
-        laplacian = self._skeleton.laplacian_matrix
-        _, vectors = eig(laplacian, left=False, right=True)
+        laplacian = scipy.sparse.csgraph.laplacian(
+            self._skeleton.joints_adjacency(False), normed=True)
+        _, vectors = scipy.linalg.eigh(laplacian, overwrite_a=False)
         id_embeddings = torch.from_numpy(vectors).float()
         id_embeddings = id_embeddings.unsqueeze(0).unsqueeze(2) # (1, C, 1, V)
         
@@ -80,33 +82,36 @@ class Embeddings(nn.Module):
                 joints: torch.Tensor,
                 bones: torch.Tensor) -> torch.Tensor:
         
-        N, _, T, V = joints.shape
+        N, _, T, J = joints.shape
+        _, _, _, B = bones.shape
         
-        if self.training:
-            # (V)
-            sign_flip = torch.rand(self.id_embeddings.size(-1), device=joints.device)
-            sign_flip[sign_flip>=0.5] = 1.0
-            sign_flip[sign_flip<0.5] = -1.0
-            sign_flip = sign_flip.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        #if self.training:
+        #    # (V)
+        #    sign_flip = torch.rand(self.id_embeddings.size(-1), device=joints.device)
+        #    sign_flip[sign_flip>=0.5] = 1.0
+        #    sign_flip[sign_flip<0.5] = -1.0
+        #    sign_flip = sign_flip.unsqueeze(0).unsqueeze(0).unsqueeze(0)
+        # 
+        #    id_embeddings = self.id_embeddings * sign_flip
+        #else:
+        #    id_embeddings = self.id_embeddings
         
-            id_embeddings = self.id_embeddings * sign_flip
-        else:
-            id_embeddings = self.id_embeddings
+        ide = self.id_embeddings.expand(N, self._id_channels, T, J)
         
-        ide = id_embeddings.expand(N, self._id_channels, T, V)
         te = self.temporal_enc[:, :, :T, :]
-        te = te.expand(N, self._temporal_channels, T, V)
+        j_te = te.expand(N, self._temporal_channels, T, J)
+        b_te = te.expand(N, self._temporal_channels, T, B)
         
         # joints
-        je = self.joint_embeddings.expand(N, self._type_channels, T, V)
-        j = torch.cat([joints, ide, ide, je, te], dim=1)
+        je = self.joint_embeddings.expand(N, self._type_channels, T, J)
+        j = torch.cat([joints, ide, ide, je, j_te], dim=1)
         
         # bones
-        conn = self._skeleton.joints_connections
+        conn = self._skeleton.bones()
         first = ide[:, :, :, conn[:, 0]]
         second = ide[:, :, :, conn[:, 1]]
-        be = self.bone_embeddings.expand(N, self._type_channels, T, V)
-        b = torch.cat([bones, first, second, be, te], dim=1)
+        be = self.bone_embeddings.expand(N, self._type_channels, T, B)
+        b = torch.cat([bones, first, second, be, b_te], dim=1)
         
         # projection
         concat = torch.cat([j, b], dim=-1)

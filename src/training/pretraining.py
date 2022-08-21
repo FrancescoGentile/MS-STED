@@ -24,7 +24,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torchmetrics
 
-from ..model.dropout import StructureDropoutScheduler
+from ..model.dropout import DropHeadScheduler
 from ..model.embeddings import Embeddings
 from ..model.model import Decoder, Discriminator, Encoder, Reconstructor, ReconstructorDiscriminatorModel
 from ..dataset.dataset import Dataset
@@ -155,11 +155,12 @@ class PretrainingProcessor:
         self._logger.info(f'Accumulation steps: {self._config.accumulation_steps}')
 
     def _set_model(self, skeleton: SkeletonGraph, channels: int):
-        embeddings = Embeddings(self._config.model.embeddings, channels, skeleton)
-        encoder = Encoder(self._config.model.encoder, True)
-        decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
-        reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels, self._config.model.feature_dropout)
-        discriminator = Discriminator(self._config.model.decoder.out_channels, self._config.model.feature_dropout)
+        model_cfg = self._config.model
+        embeddings = Embeddings(model_cfg.embeddings, channels, skeleton)
+        encoder = Encoder(model_cfg.encoder, True)
+        decoder = Decoder(model_cfg.decoder, self._config.model.encoder)
+        reconstructor = Reconstructor(model_cfg.decoder.out_channels, channels, model_cfg.dropout)
+        discriminator = Discriminator(model_cfg.decoder.out_channels, model_cfg.dropout)
         model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)
         
         self._logger.info(f'Model: {self._config.model.name}')
@@ -172,7 +173,7 @@ class PretrainingProcessor:
         model = model.to(self._device)
         gpu_id = self._config.distributed.get_gpu_id()
         devices_ids = [gpu_id] if gpu_id is not None else None
-        self._model = DDP(model, device_ids=devices_ids)
+        self._model = DDP(model, device_ids=devices_ids, find_unused_parameters=model_cfg.dropout.layer > 0.0)
     
     def _save_model_description(self, model: nn.Module):
         if self._config.distributed.is_local_master():
@@ -214,9 +215,9 @@ class PretrainingProcessor:
     
     def _set_dropout_scheduler(self):
         num_steps = (len(self._train_loader) // self._config.accumulation_steps) * self._config.num_epochs
-        self._dropout_scheduler = StructureDropoutScheduler(
+        self._dropout_scheduler = DropHeadScheduler(
             modules=self._model.modules(),
-            p=self._config.model._structure_dropout,
+            p=self._config.model.dropout.head,
             num_steps=num_steps
         )
         

@@ -3,10 +3,8 @@
 ##
 
 import os
-import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import numpy as np
-import yaml
 
 from .skeleton import NTUSkeletonGraph
 from .config import NTUDatasetConfig
@@ -105,7 +103,8 @@ class NTUDataset(Dataset):
             data = (data - self._mean) / self._std
         
         C, T, V, M = data.shape
-        B = len(self._skeleton.joints_connections)
+        conn = self._skeleton.bones()
+        B = len(conn)
         joints = np.zeros((C * 3, T, V, M))
         bones = np.zeros((C * 3, T, B, M))
         
@@ -113,9 +112,8 @@ class NTUDataset(Dataset):
         joints[C:C*2, :-1] = joints[:C, 1:] - joints[:C, :-1]
         joints[C*2:] = joints[:C] - np.expand_dims(joints[:C, :, 1], 2)
         
-        conn = self._skeleton.joints_connections
-        for u, v in conn:
-            bones[:C, :, u] = joints[:C, :, u] - joints[:C, :, v]
+        for idx, (u, v) in enumerate(conn):
+            bones[:C, :, idx] = joints[:C, :, v] - joints[:C, :, u]
         bones[C:C*2, :-1] = bones[:C, 1:] - bones[:C, :-1]
         
         bone_length = 0
@@ -139,8 +137,8 @@ class NTUDataset(Dataset):
             data, jc = self._get_transformed(index)
             
             bc = np.logical_or(
-                jc[:, self._skeleton.joints_connections[:, 0]], 
-                jc[:, self._skeleton.joints_connections[:, 1]])
+                jc[:, self._skeleton.bones()[:, 0]], 
+                jc[:, self._skeleton.bones()[:, 1]])
 
             jm, bm = self._get_joints_bone(data, random_scale, random_rot)
             jo, bo = self._get_joints_bone(self._data[index], random_scale, random_rot)
