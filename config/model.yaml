@@ -5,7 +5,7 @@
 dropout:
   sublayer: 0.2
   feature: 0.1
-  layer: 0.2
+  layer: 0.0
   head:
     start: 0.2
     end: 0.2
@@ -23,6 +23,8 @@ encoder:
               dilation: 1
             - window: 5
               dilation: 2
+            - window: 5
+              dilation: 3
           temporal: 
             - window: 5
               dilation: 1
@@ -34,6 +36,8 @@ encoder:
               dilation: 1
             - window: 5
               dilation: 2
+            - window: 5
+              dilation: 3
           temporal: 
             - window: 5
               dilation: 1
@@ -46,6 +50,8 @@ encoder:
               dilation: 1
             - window: 5
               dilation: 2
+            - window: 5
+              dilation: 3
           temporal: 
             - window: 5
               dilation: 1
@@ -55,8 +61,6 @@ encoder:
       layers:
         - num_heads: 4
           branches:
-            - window: 1
-              dilation: 1
             - window: 5
               dilation: 1
             - window: 5
@@ -71,8 +75,6 @@ encoder:
         - cross_view: 'larger'
           num_heads: 4
           branches:
-            - window: 1
-              dilation: 1
             - window: 5
               dilation: 1
             - window: 5
@@ -86,8 +88,6 @@ encoder:
               dilation: 2
         - num_heads: 4
           branches:
-            - window: 1
-              dilation: 1
             - window: 5
               dilation: 1
             - window: 5
@@ -99,12 +99,10 @@ encoder:
               dilation: 1
             - window: 5
               dilation: 2
-    - channels: 256
+    - channels: 128
       layers:
         - num_heads: 8
           branches:
-            - window: 1
-              dilation: 1
             - window: 5
               dilation: 1
             - window: 5

@@ -282,8 +282,8 @@ class LayerConfig:
         elif type(cfg.branches) != list:
             raise ValueError('Branches field in layer confif must be a list')
         
-        if self._in_channels % len(cfg.branches) != 0:
-            raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
+        #if self._in_channels % len(cfg.branches) != 0:
+        #    raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
         
         self._branches: List[LayerConfig] = []
         last_prod = -1
@@ -298,7 +298,7 @@ class LayerConfig:
             branch = BranchConfig(
                 bc,
                 self._in_channels,
-                branch_channels,
+                self._in_channels,
                 self._num_heads,
                 cross_view,
                 dropout)
@@ -320,7 +320,7 @@ class LayerConfig:
         self._temporal = TemporalConfig(
             cfg.temporal, 
             sample,
-            self._in_channels, 
+            self._in_channels * len(self._branches), 
             self._out_channels,
             dropout)
             
