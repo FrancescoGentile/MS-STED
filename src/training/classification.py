@@ -177,7 +177,7 @@ class ClassificationProcessor:
         model = model.to(self._device)
         gpu_id = self._config.distributed.get_gpu_id()
         devices_ids = [gpu_id] if gpu_id is not None else None
-        self._model = DDP(model, device_ids=devices_ids)
+        self._model = DDP(model, device_ids=devices_ids, find_unused_parameters=self._config.model.dropout.layer > 0)
     
     def _save_model_description(self, model: nn.Module):
         if self._config.distributed.is_local_master():

@@ -1,0 +1,123 @@
+##
+##
+##
+
+dropout:
+  sublayer: 0.2
+  feature: 0.1
+  layer: 0.2
+  head:
+    start: 0.2
+    end: 0.2
+    warmup: 8
+embeddings:
+  temporal_channels: 64
+  type_channels: 8
+encoder:
+  blocks:
+    - channels: 96
+      layers:
+        - num_heads: 2
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+        - cross_view: 'larger'
+          num_heads: 2
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+        - num_heads: 2
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+    - channels: 192
+      layers:
+        - num_heads: 4
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+        - cross_view: 'smaller'
+          num_heads: 4
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+        - num_heads: 4
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+    - channels: 384
+      layers:
+        - num_heads: 8
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+        - cross_view: 'smaller'
+          num_heads: 8
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+        - num_heads: 8
+          branches:
+            - window: 5
+              dilation: 1
+            - window: 5
+              dilation: 2
+            - window: 5
+              dilation: 3
+decoder:
+  blocks:
+    - channels: 256
+      layers:
+        - num_heads: 8
+          branches:
+            - window: 3
+              dilation: 1
+    - channels: 128
+      layers:
+        - num_heads: 8
+          branches:
+            - window: 3
+              dilation: 1
+    - channels: 64
+      layers:
+        - num_heads: 8
+          branches:
+            - window: 3
+              dilation: 1
+        - num_heads: 8
+          branches:
+            - window: 5
+              dilation: 1
+              

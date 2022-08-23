@@ -282,8 +282,8 @@ class LayerConfig:
         elif type(cfg.branches) != list:
             raise ValueError('Branches field in layer confif must be a list')
         
-        #if self._in_channels % len(cfg.branches) != 0:
-        #    raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
+        if self._in_channels % len(cfg.branches) != 0 or (self._out_channels % len(cfg.branches) != 0):
+            raise ValueError(f'Number of branches in a layer must divide the number of channels of that layer')
         
         self._branches: List[LayerConfig] = []
         last_prod = -1
@@ -297,8 +297,7 @@ class LayerConfig:
             
             branch = BranchConfig(
                 bc,
-                self._in_channels,
-                self._in_channels,
+                branch_channels,
                 self._num_heads,
                 cross_view,
                 dropout)
@@ -311,6 +310,7 @@ class LayerConfig:
         if len(self._branches) == 1 and self._cross_view != CrossViewType.NONE:
             raise ValueError(f'A layer containing only one branch cannot be cross-view')
         
+        '''
         # Set temporal
         if cfg.temporal is None:
             raise ValueError('Missing temporal field in layer config')
@@ -323,6 +323,7 @@ class LayerConfig:
             self._in_channels * len(self._branches), 
             self._out_channels,
             dropout)
+        '''
             
     def to_dict(self) -> dict:
         d = {'cross-view': str(self._cross_view.value), 
@@ -333,7 +334,7 @@ class LayerConfig:
             branches.append(b.to_dict())
         
         d['branches'] = branches
-        d['temporal'] = self._temporal.to_dict()
+        #d['temporal'] = self._temporal.to_dict()
         
         return d
             
@@ -355,7 +356,7 @@ class LayerConfig:
     
     @property
     def temporal(self) -> TemporalConfig:
-        return self._temporal
+        raise NotImplementedError
     
     @property
     def dropout(self) -> DropoutConfig:
@@ -364,12 +365,10 @@ class LayerConfig:
 class BranchConfig:
     def __init__(self, 
                  cfg: dict,
-                 in_channels: int,
                  channels: int,
                  num_heads: int,
                  cross_view: bool,
                  dropout: DropoutConfig) -> None:
-        self._in_channels = in_channels
         self._channels = channels
         self._num_heads = num_heads
         self._cross_view = cross_view
@@ -402,10 +401,6 @@ class BranchConfig:
     def cross_view(self) -> bool:
         return self._cross_view
     
-    @property
-    def in_channels(self) -> int:
-        return self._in_channels
-        
     @property
     def channels(self) -> int:
         return self._channels

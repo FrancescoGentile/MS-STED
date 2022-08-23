@@ -23,6 +23,8 @@ class Encoder(nn.Module):
         for block_cfg in config.blocks:
             self.blocks.append(Block(block_cfg, skeleton))
         
+        self.average = nn.AvgPool2d(kernel_size=(2, 1))
+        
     @property
     def save_intermediates(self) -> bool:
         return self._save_interm
@@ -39,13 +41,15 @@ class Encoder(nn.Module):
             output = None
         
         # Apply blocks
-        for block in self.blocks:
+        for idx, block in enumerate(self.blocks):
             x = block(x)
-            
             if self.save_intermediates:
                 output.append(x)
             else:
                 output = x
+            
+            if idx < len(self.blocks) - 1:
+                x = self.average(x)
 
         return output
     

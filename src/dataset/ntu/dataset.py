@@ -105,23 +105,23 @@ class NTUDataset(Dataset):
         C, T, V, M = data.shape
         conn = self._skeleton.bones()
         B = len(conn)
-        joints = np.zeros((C * 3, T, V, M))
-        bones = np.zeros((C * 3, T, B, M))
+        joints = np.zeros((C * 2, T, V, M))
+        bones = np.zeros((C * 2, T, B, M))
         
         joints[:C] = data
         joints[C:C*2, :-1] = joints[:C, 1:] - joints[:C, :-1]
-        joints[C*2:] = joints[:C] - np.expand_dims(joints[:C, :, 1], 2)
+        #joints[C*2:] = joints[:C] - np.expand_dims(joints[:C, :, 1], 2)
         
         for idx, (u, v) in enumerate(conn):
             bones[:C, :, idx] = joints[:C, :, v] - joints[:C, :, u]
         bones[C:C*2, :-1] = bones[:C, 1:] - bones[:C, :-1]
         
-        bone_length = 0
-        for c in range(C):
-            bone_length += bones[c] ** 2
-        bone_length = np.sqrt(bone_length) + 0.0001
-        for c in range(C):
-            bones[C*2+c] = np.arccos(bones[c] / bone_length)
+        #bone_length = 0
+        #for c in range(C):
+        #    bone_length += bones[c] ** 2
+        #bone_length = np.sqrt(bone_length) + 0.0001
+        #for c in range(C):
+        #    bones[C*2+c] = np.arccos(bones[c] / bone_length)
         
         return joints, bones
 
@@ -160,7 +160,7 @@ class NTUDataset(Dataset):
     
     @property
     def channels(self) -> int:
-        return 9
+        return 6
     
     @property
     def num_frames(self) -> int:
