@@ -5,8 +5,8 @@
 seed: 3407
 
 datasets:
-  - name: 'ntu60-xsub'
-    dataset_path: 'data/ntu60-xsub'
+  - name: 'ntu60-xview'
+    dataset_path: 'data/ntu60-xview'
     training_args:
       normalize: True
       change_probability: 0.15
@@ -27,23 +27,16 @@ tests:
 trainings: 
   - model: 0
     dataset: 0
-    seed: 1
-    pretraining_args:
-      train_batch_size: 64
-      eval_batch_size: 64
-      accumulation_steps: 16
-      num_epochs: 3
-      save_interleave: 1
-      optimizer: 0
-      scheduler: 0
+    #work_dir: ''
+    #resume: ''
     classification_args:
-      train_batch_size: 64
-      eval_batch_size: 64
+      train_batch_size: 256
+      eval_batch_size: 256
       accumulation_steps: 16
-      num_epochs: 3
+      num_epochs: 70
       save_interleave: 1
       optimizer: 0
-      scheduler: 0
+      scheduler: 1
       label_smoothing: 0.1
 
 optimizers: 
@@ -62,10 +55,8 @@ lr_schedulers:
     args:
       t_initial: 10
       t_mul: 2
-  - name: 'LinearLR'
   - name: 'OneCycleLR'
     step_after_batch: True
     args:
-      max_lr: 1.0
-      epochs: 64
-      steps_per_epoch: 25
+      max_lr: 0.001
+      three_phase: True

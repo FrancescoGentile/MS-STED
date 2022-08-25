@@ -25,9 +25,11 @@ class NTUDatasetGenerator(DatasetGenerator):
     def __init__(self, config: NTUDatasetConfig) -> None:
         self.config = config
         log_file = os.path.join(self.config._dataset_path, 'log.txt')
-        self.logger: logging.Logger = utils.init_logger(name=self.config.name, 
-                                                        level=logging.INFO,
-                                                        file=log_file)
+        self.logger: logging.Logger = utils.init_logger(
+            name=self.config.name, 
+            level=logging.INFO,
+            file=log_file,
+            local_master=True)
         
         ignored_samples = []
         if self.config.ignored_file is not None:

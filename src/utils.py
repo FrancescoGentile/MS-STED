@@ -14,7 +14,7 @@ class NoAliasDumper(yaml.SafeDumper):
     def ignore_aliases(self, data):
         return True
 
-class Filter(logging.Filter):
+class LocalMasterFilter(logging.Filter):
     def __init__(self, name: str, local_master: bool) -> None:
         super().__init__(name)
         self._local_master = local_master
@@ -31,10 +31,10 @@ def load_config_file(path: str) -> dict:
             options = yaml.safe_load(f)
     except:
         raise(f'An error occurred while trying to read config file.')
+    
+    config = DefaultMunch.fromDict(options, default=None)
         
-    options = DefaultMunch.fromDict(options, default=None)
-        
-    return options
+    return config
 
 def init_logging():
     logger = logging.getLogger()
@@ -56,6 +56,8 @@ def init_logger(name: str, level: int, file: Optional[str], local_master: bool) 
     logger = logging.getLogger(name)
     for handler in logger.handlers:
         logger.removeHandler(handler)
+    for filter in logger.filters:
+        logger.removeFilter(filter)
 
     formatter = logging.Formatter(fmt='[ %(asctime)s ] %(levelname)s --> %(message)s',
                                   datefmt='%Y-%m-%d %H:%M:%S')
@@ -64,11 +66,11 @@ def init_logger(name: str, level: int, file: Optional[str], local_master: bool) 
     stream_handler.setFormatter(formatter)
     stream_handler.setLevel(level)
     logger.addHandler(stream_handler)
-    logger.addFilter(Filter(name, local_master))
+    logger.addFilter(LocalMasterFilter(name, local_master))
 
     if file is not None:
         file_handler = logging.FileHandler(
-            filename=file, mode='w', encoding='utf-8')
+            filename=file, mode='a', encoding='utf-8')
         file_handler.setFormatter(formatter)
         file_handler.setLevel(level)
         logger.addHandler(file_handler)

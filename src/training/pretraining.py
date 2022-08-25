@@ -24,7 +24,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torchmetrics
 
-from ..model.dropout import StructureDropoutScheduler
+from ..model.dropout import DropHeadScheduler
 from ..model.embeddings import Embeddings
 from ..model.model import Decoder, Discriminator, Encoder, Reconstructor, ReconstructorDiscriminatorModel
 from ..dataset.dataset import Dataset
@@ -155,11 +155,12 @@ class PretrainingProcessor:
         self._logger.info(f'Accumulation steps: {self._config.accumulation_steps}')
 
     def _set_model(self, skeleton: SkeletonGraph, channels: int):
-        embeddings = Embeddings(self._config.model.embeddings, channels, skeleton)
-        encoder = Encoder(self._config.model.encoder, True)
-        decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
-        reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels, self._config.model.feature_dropout)
-        discriminator = Discriminator(self._config.model.decoder.out_channels, self._config.model.feature_dropout)
+        model_cfg = self._config.model
+        embeddings = Embeddings(model_cfg.embeddings, channels)
+        encoder = Encoder(model_cfg.encoder, True)
+        decoder = Decoder(model_cfg.decoder, self._config.model.encoder)
+        reconstructor = Reconstructor(model_cfg.decoder.out_channels, channels, model_cfg.feature_dropout)
+        discriminator = Discriminator(model_cfg.decoder.out_channels, model_cfg.feature_dropout)
         model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)
         
         self._logger.info(f'Model: {self._config.model.name}')
@@ -214,10 +215,19 @@ class PretrainingProcessor:
     
     def _set_dropout_scheduler(self):
         num_steps = (len(self._train_loader) // self._config.accumulation_steps) * self._config.num_epochs
-        self._dropout_scheduler = StructureDropoutScheduler(
+        
+        start_epoch = 0
+        if self._checkpoint is not None:
+            start_epoch = self._checkpoint['start_epoch']
+        
+        self._dropout_scheduler = DropHeadScheduler(
             modules=self._model.modules(),
-            p=self._config.model._structure_dropout,
-            num_steps=num_steps
+            start=self._config.model.structure_dropout,
+            end=self._config.model.structure_dropout,
+            warmup=8,
+            num_epochs=self._config.num_epochs,
+            steps_per_epoch=num_steps,
+            start_epoch=start_epoch
         )
         
     def _init_metrics_file(self):

@@ -34,13 +34,8 @@ def init_parser() -> argparse.ArgumentParser:
     return parser
 
 def start(config: Config):
-    utils.init_logging()
-    logger = utils.init_logger('main', logging.INFO, config.log_file, config.distributed.is_local_master())
-    
-    if config.distributed.is_local_master() and config.generate:
-        dataset.start_generations(config.datasets_config, logger, config.debug)
-    
     torch.distributed.barrier()
+    logger = utils.init_logger('main', logging.INFO, config.log_file, True)
 
     if config.train:
         training.start_trainings(config.trainings_config, logger, config.debug)
@@ -63,8 +58,15 @@ def main():
         message = traceback.format_exc().strip('\n') if args.debug else e
         print(message)
         exit(1)
+    
+    utils.init_logging()
+    logger = utils.init_logger('main', logging.INFO, config.log_file, True)
         
-    dist.run(config.distributed, start, config)
+    if config.generate:
+        dataset.start_generations(config.datasets_config, logger, config.debug)
+    
+    if config.train or config.test:
+        dist.run(config.distributed, start, config)
 
 if __name__ == '__main__':
     main()

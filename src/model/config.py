@@ -89,6 +89,10 @@ class ModelConfig:
     @property
     def feature_dropout(self) -> float:
         return self._feature_dropout
+    
+    @property
+    def structure_dropout(self) -> float:
+        return self._structure_dropout
 
 # Configuration for embeddings
 class EmbeddingsConfig:

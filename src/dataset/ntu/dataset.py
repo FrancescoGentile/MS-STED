@@ -189,3 +189,7 @@ class NTUDataset(Dataset):
     def num_frames(self) -> int:
         return self._config.num_frames
     
+    @property
+    def num_frames(self) -> int:
+        return self._data[0].shape[1]
+    

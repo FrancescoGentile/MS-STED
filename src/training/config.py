@@ -121,9 +121,10 @@ class TrainingConfig:
                 self._process_pretraining = False
                 self._process_classification = True
     
-    def to_dict(self) -> dict:
-        model = self._model.to_dict(False)
-        model.update({'architecture': self._model_file})
+    def to_dict(self, architecture: bool = False) -> dict:
+        model = self._model.to_dict(architecture)
+        if not architecture:
+            model.update({'architecture': self._model_file})
         
         d = {'dataset': self._dataset.to_dict(generate=False, training=True),
              'model': model}
@@ -214,6 +215,8 @@ class ClassificationConfig:
         self._best_weights_file = os.path.join(self._work_dir, 'best_weights.pth')
         
         # Setup checkpoints
+        self._confusion_dir = os.path.join(self._work_dir, 'confusion_matrix')
+        utils.check_and_create_dir(self._confusion_dir)
         self._checkpoints_dir = os.path.join(self._work_dir, 'checkpoints')
         utils.check_and_create_dir(self._checkpoints_dir)
         self._resume_checkpoint = None
@@ -295,6 +298,9 @@ class ClassificationConfig:
     
     def checkpoint_file(self, epoch: int) -> str:
         return os.path.join(self._checkpoints_dir, f'epoch-{epoch}.tar')
+    
+    def confusion_matrix_file(self, epoch: int) -> str:
+        return os.path.join(self._confusion_dir, f'epoch-{epoch}.npy')
     
     @property
     def save_interleave(self) -> int:

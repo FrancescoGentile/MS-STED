@@ -2,6 +2,7 @@
 ##
 ##
 
+import math
 from typing import Optional, Tuple
 import logging
 import os 
@@ -23,18 +24,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import torchmetrics
 
-from ..model.dropout import StructureDropoutScheduler
+from ..model.dropout import DropHeadScheduler
 from ..model.embeddings import Embeddings
 from ..model.model import Classifier, Encoder, ClassificationModel, Decoder, Reconstructor, Discriminator, ReconstructorDiscriminatorModel
 from ..dataset.dataset import Dataset
 from ..dataset.skeleton import SkeletonGraph
-from .. import utils
 from .config import ClassificationConfig
 from . import metrics
         
 class ClassificationProcessor: 
     
-    def __init__(self, config: ClassificationConfig, logger: logging.Logger, writer: SummaryWriter) -> None:
+    def __init__(self, config: ClassificationConfig, logger: logging.Logger, writer: Optional[SummaryWriter]) -> None:
         self._config = config
         self._logger = logger
         self._writer = writer
@@ -45,14 +45,12 @@ class ClassificationProcessor:
         self._load_checkpoint()
         
         skeleton = self._config.dataset.to_skeleton_graph()
-        train_dataset, eval_dataset = self._get_datasets(skeleton)
-        self._num_classes = train_dataset.num_classes
-        self._set_loaders(train_dataset, eval_dataset)
-        self._set_model(skeleton, train_dataset.channels, train_dataset.num_classes)
+        self._set_datasets(skeleton)
+        self._set_loaders()
+        self._set_model(skeleton)
         self._set_optimizer()
         self._set_lr_scheduler()
         self._set_dropout_scheduler()
-        self._init_metrics_file()
         self._set_metrics()
         
     def _init_environment(self):
@@ -65,7 +63,7 @@ class ClassificationProcessor:
         
         if self._config.debug:
             torch.backends.cudnn.benchmark = False
-            torch.use_deterministic_algorithms(True)
+            torch.use_deterministic_algorithms(True, warn_only=True)
             os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         else:
             torch.backends.cudnn.benchmark = True
@@ -106,23 +104,21 @@ class ClassificationProcessor:
             self._device = torch.device(gpu_id)
             self._logger.info('Using GPU')
     
-    def _get_datasets(self, skeleton: SkeletonGraph) -> Tuple[Dataset, Dataset]:
-        train_dataset = self._config.dataset.to_dataset(skeleton, train_set=True, pretrain=False)
-        eval_dataset = self._config.dataset.to_dataset(skeleton, train_set=False, pretrain=False)
+    def _set_datasets(self, skeleton: SkeletonGraph):
+        self._train_dataset = self._config.dataset.to_dataset(skeleton, train_set=True, pretrain=False)
+        self._eval_dataset = self._config.dataset.to_dataset(skeleton, train_set=False, pretrain=False)
         
-        self._logger.info(f'Training on dataset {train_dataset.name}')
-        
-        return train_dataset, eval_dataset
+        self._logger.info(f'Training on dataset {self._train_dataset.name}')
     
-    def _set_loaders(self, train_dataset: Dataset, eval_dataset: Dataset):
+    def _set_loaders(self):
         train_sampler = DistributedSampler(
-            train_dataset,
+            self._train_dataset,
             num_replicas=self._config.distributed.world_size,
             shuffle=True, 
             seed=self._config.seed, 
             drop_last=True)
         eval_sampler = DistributedSampler(
-            eval_dataset, 
+            self._eval_dataset, 
             num_replicas=self._config.distributed.world_size,
             shuffle=False,
             seed=self._config.seed,
@@ -132,14 +128,14 @@ class ClassificationProcessor:
         eval_batch_size = self._config.eval_batch_size // self._config.distributed.world_size
         
         self._train_loader = DataLoader(
-            dataset=train_dataset, 
+            dataset=self._train_dataset, 
             batch_size=train_batch_size // self._config.accumulation_steps, 
             num_workers=4,
             pin_memory=True,
             sampler=train_sampler)
 
         self._eval_loader = DataLoader(
-            dataset=eval_dataset, 
+            dataset=self._eval_dataset, 
             batch_size=eval_batch_size // self._config.accumulation_steps, 
             num_workers=4,
             pin_memory=True, 
@@ -151,22 +147,27 @@ class ClassificationProcessor:
                           f'(total) {self._config.eval_batch_size}')
         self._logger.info(f'Accumulation steps: {self._config.accumulation_steps}')
     
-    def _set_model(self, skeleton: SkeletonGraph, channels: int, num_classes: int):
-        embeddings = Embeddings(self._config.model.embeddings, channels, skeleton)
-        encoder = Encoder(self._config.model.encoder, False)
+    def _set_model(self, skeleton: SkeletonGraph):
+        channels = self._train_dataset.channels
+        num_classes = self._train_dataset.num_classes
+        num_frames = self._train_dataset.num_frames
+        model_cfg = self._config.model
+        
+        embeddings = Embeddings(model_cfg.embeddings, channels, num_frames, skeleton)
+        encoder = Encoder(model_cfg.encoder, False)
         if self._config.pretrain_weights is not None:
             decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
-            reconstructor = Reconstructor(self._config.model.decoder.out_channels, channels)
-            discriminator = Discriminator(self._config.model.decoder.out_channels)
+            reconstructor = Reconstructor(model_cfg.decoder.out_channels, channels, model_cfg.feature_dropout)
+            discriminator = Discriminator(model_cfg.decoder.out_channels, model_cfg.feature_dropout)
             model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)
             
             state_dict = torch.load(self._config.pretrain_weights, map_location=self._device)
             model.load_state_dict(state_dict)
         
-        classifier = Classifier(self._config.model.encoder.out_channels, num_classes, self._config.model.feature_dropout) 
+        classifier = Classifier(model_cfg.encoder.out_channels, num_classes, model_cfg.feature_dropout) 
         model = ClassificationModel(embeddings, encoder, classifier)
         
-        self._logger.info(f'Model: {self._config.model.name}')
+        self._logger.info(f'Model: {model_cfg.name}')
         self._save_model_description(model)
         
         if self._checkpoint is not None: 
@@ -208,66 +209,85 @@ class ClassificationProcessor:
         self._optimizer = optimizer
     
     def _set_lr_scheduler(self):
-        lr_scheduler = self._config.lr_scheduler.to_lr_scheduler(self._optimizer)
+        steps_per_epoch = self._get_steps_per_epoch(False)
+        lr_scheduler = self._config.lr_scheduler.to_lr_scheduler(
+            self._optimizer,
+            epochs=self._config.num_epochs,
+            steps_per_epoch=steps_per_epoch)
         self._logger.info(f'LR scheduler: {self._config.lr_scheduler}')
         if self._checkpoint is not None:
-            lr_scheduler.load_state_dict(self._checkpoint['lr_scheduler'])
+            if self._checkpoint is not None:
+                start_epoch = self._checkpoint['start_epoch']
+            else:
+                start_epoch = 0
+            lr_scheduler.load_state_dict(self._checkpoint['lr_scheduler'], start_epoch, steps_per_epoch)
             self._logger.info('Successfully loaded lr scheduler state from checkpoint')
         
         self._lr_scheduler = lr_scheduler
         
     def _set_dropout_scheduler(self):
-        num_steps = (len(self._train_loader) // self._config.accumulation_steps) * self._config.num_epochs
-        self._dropout_scheduler = StructureDropoutScheduler(
+        start_epoch = 0
+        if self._checkpoint is not None:
+            start_epoch = self._checkpoint['start_epoch']
+        
+        self._dropout_scheduler = DropHeadScheduler(
             modules=self._model.modules(),
-            p=self._config.model._structure_dropout,
-            num_steps=num_steps
+            start=self._config.model.structure_dropout,
+            end=self._config.model.structure_dropout,
+            warmup=8,
+            num_epochs=self._config.num_epochs,
+            steps_per_epoch=self._get_steps_per_epoch(eval=False),
+            start_epoch=start_epoch
         )
     
     def _init_metrics_file(self):
         if self._config.distributed.is_local_master():
             with open(self._config.metrics_file, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['epoch', 'top1_accuracy', 'top5_accuracy', 'precision', 'recall', 'f1_score'])
+                writer.writerow(['epoch', 'top1_acc', 'top5_acc', 'precision', 'recall', 'f1_score'])
+
+    def _init_wandb_metrics(self):
+        if self._config.distributed.is_master():
+            for metr, phase in [(self._train_metrics, 'train'), (self._eval_metrics, 'eval')]:
+                epoch = f'classification/{phase}/epoch'
+                wandb.run.define_metric(epoch)
+                
+                if phase == 'train':
+                    wandb.run.define_metric(f'classification/{phase}/learning_rate', step_metric=epoch, summary='none')
+                
+                # f1_score, loss, precision, recall, top1_acc, top5_acc
+                summaries = ['max', 'min', 'max', 'max', 'max', 'max', 'max']
+                for name, summary in zip(metr.keys(), summaries):
+                    wandb.run.define_metric(f'classification/{phase}/{name}', step_metric=epoch, summary=summary)
     
     def _set_metrics(self):
+        num_classes = self._train_dataset.num_classes
         self._train_metrics = torchmetrics.MetricCollection({
             'loss': metrics.CrossEntropyLoss(self._config.label_smoothing),
-            'top1_acc': torchmetrics.Accuracy(num_classes=self._num_classes, average='micro', top_k=1),
-            'top5_acc': torchmetrics.Accuracy(num_classes=self._num_classes, average='micro', top_k=5),
-            'precision': torchmetrics.Precision(num_classes=self._num_classes, average='micro', top_k=1),
-            'recall': torchmetrics.Recall(num_classes=self._num_classes, average='micro', top_k=1),
-            'f1_score': torchmetrics.F1Score(num_classes=self._num_classes, average='micro', top_k=1)
+            'top1_acc': torchmetrics.Accuracy(num_classes=num_classes, average='micro', top_k=1),
+            'top5_acc': torchmetrics.Accuracy(num_classes=num_classes, average='micro', top_k=5),
+            'precision': torchmetrics.Precision(num_classes=num_classes, average='micro', top_k=1),
+            'recall': torchmetrics.Recall(num_classes=num_classes, average='micro', top_k=1),
+            'f1_score': torchmetrics.F1Score(num_classes=num_classes, average='micro', top_k=1)
         }).to(self._device)
         
         self._eval_metrics = torchmetrics.MetricCollection({
             'loss': metrics.CrossEntropyLoss(self._config.label_smoothing),
-            'top1_acc': torchmetrics.Accuracy(num_classes=self._num_classes, average='micro', top_k=1),
-            'top5_acc': torchmetrics.Accuracy(num_classes=self._num_classes, average='micro', top_k=5),
-            'precision': torchmetrics.Precision(num_classes=self._num_classes, average='micro', top_k=1),
-            'recall': torchmetrics.Recall(num_classes=self._num_classes, average='micro', top_k=1),
-            'f1_score': torchmetrics.F1Score(num_classes=self._num_classes, average='micro', top_k=1),
+            'top1_acc': torchmetrics.Accuracy(num_classes=num_classes, average='micro', top_k=1),
+            'top5_acc': torchmetrics.Accuracy(num_classes=num_classes, average='micro', top_k=5),
+            'precision': torchmetrics.Precision(num_classes=num_classes, average='micro', top_k=1),
+            'recall': torchmetrics.Recall(num_classes=num_classes, average='micro', top_k=1),
+            'f1_score': torchmetrics.F1Score(num_classes=num_classes, average='micro', top_k=1),
         }).to(self._device)
         
         self._logger.info('Loss function used: CrossEntropyLoss')
         
-        if self._config.distributed.is_master():
-            wandb.run.define_metric('classification/train/epoch')
-            wandb.run.define_metric('classification/train/learning_rate', step_metric='classification/train/epoch', summary='none')
-            wandb.run.define_metric('classification/train/loss', step_metric='classification/train/epoch', summary='min')
-            wandb.run.define_metric('classification/train/top1_acc', step_metric='classification/train/epoch', summary='max')
-            wandb.run.define_metric('classification/train/top5_acc', step_metric='classification/train/epoch', summary='max')
-            wandb.run.define_metric('classification/train/precision', step_metric='classification/train/epoch', summary='max')
-            wandb.run.define_metric('classification/train/recall', step_metric='classification/train/epoch', summary='max')
-            wandb.run.define_metric('classification/train/f1_score', step_metric='classification/train/epoch', summary='max')
-            
-            wandb.run.define_metric('classification/eval/epoch')
-            wandb.run.define_metric('classification/eval/loss', step_metric='classification/eval/epoch', summary='min')
-            wandb.run.define_metric('classification/eval/top1_acc', step_metric='classification/eval/epoch', summary='max')
-            wandb.run.define_metric('classification/eval/top5_acc', step_metric='classification/eval/epoch', summary='max')
-            wandb.run.define_metric('classification/eval/precision', step_metric='classification/eval/epoch', summary='max')
-            wandb.run.define_metric('classification/eval/recall', step_metric='classification/eval/epoch', summary='max')
-            wandb.run.define_metric('classification/eval/f1_score', step_metric='classification/eval/epoch', summary='max')
+        self._init_metrics_file()
+        self._init_wandb_metrics()
+        
+        # Confusion matrix does not have to be logged in wandb
+        self._eval_metrics.add_metrics({
+            'confusion': torchmetrics.ConfusionMatrix(num_classes=num_classes).to(self._device)})
         
     def _log_metrics(self, epoch: int, time: float, speed: float, train: bool, lr: Optional[Tuple[float, float]] = None):
         metrics_dict = self._train_metrics.compute() \
@@ -284,7 +304,7 @@ class ClassificationProcessor:
         if train:
             self._logger.info(f'Training epoch {epoch}')
             self._logger.info(f'\tTraining time: {time:.2f}s - Speed: {speed:.2f} samples/(second * GPU)')
-            self._logger.info(f'\tLearning rate: (before) {lr[0]:.5f} -> (after) {lr[1]:.5f}')
+            self._logger.info(f'\tLearning rate: (before) {lr[0]:.10f} -> (after) {lr[1]:.10f}')
         else:
             self._logger.info(f'Eval epoch {epoch}')
             self._logger.info(f'\tEval time: {time:.2f}s - Speed: {speed:.2f} samples/(second * GPU)')
@@ -296,36 +316,46 @@ class ClassificationProcessor:
         self._logger.info(f'\tRecall: {recall:.2%}')
         self._logger.info(f'\tF1 score: {f1_score:.2%}')
         
-        prefix = 'train' if train else 'eval'
+        phase = 'train' if train else 'eval'
         
         # Add metrics to tensorboard
         if self._config.distributed.is_local_master():
             if lr is not None:
-                self._writer.add_scalar(f'classification/{prefix}/learning_rate', lr[0], epoch)
-            self._writer.add_scalar(f'classification/{prefix}/loss', loss, epoch)
-            self._writer.add_scalar(f'classification/{prefix}/top1_accuracy', top1_acc, epoch)
-            self._writer.add_scalar(f'classification/{prefix}/top5_accuracy', top5_acc, epoch)
-            self._writer.add_scalar(f'classification/{prefix}/precision', precision, epoch)
-            self._writer.add_scalar(f'classification/{prefix}/recall', recall, epoch)
-            self._writer.add_scalar(f'classification/{prefix}/f1_score', f1_score, epoch)
+                self._writer.add_scalar(f'classification/{phase}/learning_rate', lr[0], epoch)
+            self._writer.add_scalar(f'classification/{phase}/loss', loss, epoch)
+            self._writer.add_scalar(f'classification/{phase}/top1_accuracy', top1_acc, epoch)
+            self._writer.add_scalar(f'classification/{phase}/top5_accuracy', top5_acc, epoch)
+            self._writer.add_scalar(f'classification/{phase}/precision', precision, epoch)
+            self._writer.add_scalar(f'classification/{phase}/recall', recall, epoch)
+            self._writer.add_scalar(f'classification/{phase}/f1_score', f1_score, epoch)
+            
+            if not train:
+                conf_matrix = metrics_dict['confusion'].cpu().detach().numpy()
+                np.save(self._config.confusion_matrix_file(epoch), conf_matrix)
         
         # Add metrics to wandb
         if self._config.distributed.is_master():
             if lr is not None:
-                wandb.log({'classification/train/learning_rate': lr[0]}, commit=False)
+                wandb.log({f'classification/{phase}/learning_rate': lr[0]}, commit=False)
             wandb.log({
-                f'classification/{prefix}/epoch': epoch,
-                f'classification/{prefix}/loss': loss,
-                f'classification/{prefix}/top1_acc': top1_acc,
-                f'classification/{prefix}/top5_acc': top5_acc,
-                f'classification/{prefix}/precision': precision,
-                f'classification/{prefix}/recall': recall,
-                f'classification/{prefix}/f1_score': f1_score}, commit=True)
+                f'classification/{phase}/epoch': epoch,
+                f'classification/{phase}/loss': loss,
+                f'classification/{phase}/top1_acc': top1_acc,
+                f'classification/{phase}/top5_acc': top5_acc,
+                f'classification/{phase}/precision': precision,
+                f'classification/{phase}/recall': recall,
+                f'classification/{phase}/f1_score': f1_score}, commit=True)
         
         # Add metrics to file
         with open(self._config.metrics_file, mode='a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([epoch, top1_acc, top5_acc, precision, recall, f1_score])
+    
+    def _get_steps_per_epoch(self, eval: bool) -> float:
+        if eval:
+            return math.ceil(len(self._eval_loader) / self._config.accumulation_steps)
+        else:
+            return math.floor(len(self._train_loader) / self._config.accumulation_steps)
         
     def _train(self, epoch: int):
         self._model.train()
@@ -335,11 +365,13 @@ class ClassificationProcessor:
         
         counter = tqdm(
             desc=f'train-epoch-{epoch}', 
-            total=len(self._train_loader) // self._config.accumulation_steps,
+            total=self._get_steps_per_epoch(eval=False),
             dynamic_ncols=True)
         
         start_time = timer()
         for idx, (j, b, y) in enumerate(self._train_loader):
+            if counter.n == counter.total:
+                break
             
             j: torch.Tensor = j.float().to(self._device)
             b: torch.Tensor = b.float().to(self._device)
@@ -383,7 +415,7 @@ class ClassificationProcessor:
         
         counter = tqdm(
             desc=f'eval-epoch-{epoch}', 
-            total=len(self._eval_loader) // self._config.accumulation_steps,
+            total=self._get_steps_per_epoch(eval=True),
             dynamic_ncols=True)
         
         with torch.no_grad():
@@ -400,6 +432,9 @@ class ClassificationProcessor:
                 
                 if (idx + 1) % self._config.accumulation_steps == 0:
                     counter.update(1)
+        
+        if counter.n < counter.total:
+            counter.update(counter.total - counter.n)
         
         # Computing time metrics
         end_time = timer()
