@@ -7,15 +7,24 @@ seed: 3407
 datasets:
   - name: 'ntu60-xview'
     dataset_path: 'data/ntu60-xview'
+    generation_args: 
+      ignored_file: 'data/ignore.txt'
+      ntu60_path: 'data/nturgb+d_skeletons'
+      num_frames: 64
     training_args:
       normalize: True
       change_probability: 0.15
       shuffle_probability: 0.15
       shuffle_length: 3
-    generation_args: 
-      ignored_file: 'data/ignore.txt'
-      ntu60_path: 'data/nturgb+d_skeletons'
-      num_frames: 64
+  - name: 'ntu60-xview'
+    dataset_path: 'data/ntu60-xview'
+    training_args:
+      normalize: True
+      change_probability: 0.15
+      shuffle_probability: 0.15
+      shuffle_length: 3
+      actions: [0, 1]
+      joints: [0, 1, 2, 3, 20, 4, 8]
 
 models:
   - name: 'MS-STE'
@@ -30,14 +39,26 @@ trainings:
     #work_dir: ''
     #resume: ''
     classification_args:
-      train_batch_size: 256
-      eval_batch_size: 256
+      dataset: 0
+      train_batch_size: 64
+      eval_batch_size: 64
       accumulation_steps: 16
-      num_epochs: 70
+      num_epochs: 1
       save_interleave: 1
       optimizer: 0
       scheduler: 1
       label_smoothing: 0.1
+    finetune_args:
+      dataset: 1
+      train_batch_size: 64
+      eval_batch_size: 64
+      accumulation_steps: 16
+      num_epochs: 1
+      save_interleave: 1
+      optimizer: 0
+      scheduler: 1
+      label_smoothing: 0.1
+      
 
 optimizers: 
   - name: 'AdamW'

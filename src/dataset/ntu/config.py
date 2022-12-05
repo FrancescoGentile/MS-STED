@@ -3,9 +3,8 @@
 ##
 
 from __future__ import annotations
-import logging
 import os
-from typing import Optional, Tuple
+from typing import Optional, List
 
 from ..config import DatasetConfig
 from ... import utils
@@ -61,6 +60,27 @@ class NTUDatasetConfig(DatasetConfig):
         self._seed = args.seed
         if self._seed is None:
             self._seed = 0
+            
+        if args.joints is not None:
+            self._drop_joints = [i for i in range(25)]
+            for joint in args.joints:
+                joint = int(joint)
+                if joint < 0 or joint > 24:
+                    raise ValueError(f'Joint {joint} is invalid.')
+                self._drop_joints.remove(joint)
+        else:
+            self._drop_joints = []
+            
+        max_action = 60 if '60' in self._name else 120
+        if args.actions is not None:
+            self._actions = []
+            for action in args.actions:
+                action = int(action)
+                if action < 0 or action >= max_action:
+                    raise ValueError(f'Action {action} is not valid for dataset {self._name}.')
+                self._actions.append(action)
+        else:
+            self._actions = list(range(max_action))
     
     def _parse_generation_args(self, args: Optional[dict], generate: bool):
         if args is None:
@@ -161,6 +181,14 @@ class NTUDatasetConfig(DatasetConfig):
     @property
     def dataset_path(self) -> str:
         return self._dataset_path
+    
+    @property
+    def drop_joints(self) -> List[int]:
+        return self._drop_joints
+    
+    @property
+    def actions(self) -> List[int]:
+        return self._actions
 
 from .dataset import NTUDataset
 from .generator import NTUDatasetGenerator

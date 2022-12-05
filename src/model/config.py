@@ -110,6 +110,12 @@ class EmbeddingsConfig:
             raise ValueError('Missing type-channels field in embeddings config')
         elif type(cfg.type_channels) != int:
             raise ValueError('Type-channels field in embeddings config must be an integer')
+        
+        self._id_channels = cfg.id_channels
+        if cfg.id_channels is None:
+            raise ValueError('Missing id-channels field in embeddings config')
+        elif type(cfg.id_channels) != int:
+            raise ValueError('Id-channels field in embeddings config must be an integer')
     
     def to_dict(self) -> dict:
         d = {'temporal-channels': self._temporal_channels, 
@@ -129,6 +135,10 @@ class EmbeddingsConfig:
     @property
     def type_channels(self) -> int:
         return self._type_channels
+    
+    @property
+    def id_channels(self) -> int:
+        return self._id_channels
 
 # Configuration for encoder
 class EncoderConfig:

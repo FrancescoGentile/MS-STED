@@ -2,10 +2,10 @@
 ##
 ##
 
-from typing import Iterator
 
 from torch.optim import Optimizer
-from torch.nn.parameter import Parameter
+import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .. import utils
 
@@ -20,9 +20,31 @@ class OptimizerConfig:
         
         self._args = cfg.args.toDict() if cfg.args is not None else {}
     
-    def to_optimizer(self, params: Iterator[Parameter]) -> Optimizer:
+    def to_optimizer(self, model: nn.Module) -> Optimizer:
         cls  = utils.get_class_by_name('torch.optim', self._name)
-        return cls(params, **self._args)
+        
+        if isinstance(model, DDP):
+            model = model.children().__next__()
+        
+        submodules = dict(model.named_children())
+        params = []
+        
+        defaults = {}
+        for key, value in self._args.items():
+            if key in submodules:
+                params.append({'params': submodules[key].parameters(), **value})
+                del submodules[key]
+            else:
+                defaults[key] = value
+        
+        remaining = []
+        for module in submodules.values():
+            remaining += list(module.parameters())
+           
+        params.append({'params': remaining})
+        
+        return cls(params, **defaults)
+                
 
     def to_dict(self) -> dict:
         d = {'name': self._name,

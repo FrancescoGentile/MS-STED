@@ -11,6 +11,7 @@ from .. import utils
 from .config import TrainingConfig
 from .pretraining import PretrainingProcessor
 from .classification import ClassificationProcessor
+from .finetune import FinetuneProcessor
 
 class TrainingProcessor:
     def __init__(self, config: TrainingConfig) -> None:
@@ -66,6 +67,27 @@ class TrainingProcessor:
                 else: 
                     self._logger.error(e)
                 raise e
+            
+    def _finetune(self):
+        if self._config._process_finetune:
+            logger = utils.init_logger(
+                name='finetune', 
+                level=logging.INFO, 
+                file=self._config._finetune_log_file, 
+                local_master=self._config.distributed.is_local_master())
+            
+            try:
+                self._logger.info('Starting finetuning')
+                p = FinetuneProcessor(self._config.finetune, logger, self._writer)
+                p.start()
+                self._logger.info('Finetuning finished')
+            except Exception as e:
+                self._logger.error('Finetuning failed with the following exception:')
+                if self._config.debug:
+                    self._logger.exception(e)
+                else: 
+                    self._logger.error(e)
+                raise e
     
     def _save_config(self):
         if self._config.distributed.is_local_master():
@@ -90,6 +112,7 @@ class TrainingProcessor:
                 
         self._pretrain()
         self._classification()
+        self._finetune()
         
         if self._config.distributed.is_local_master():
             self._writer.close()

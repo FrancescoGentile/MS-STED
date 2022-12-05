@@ -22,12 +22,6 @@ class TrainingConfig:
                  optimizers: List[OptimizerConfig],
                  lr_schedulers: List[LRSchedulerConfig]) -> None:
         
-        # Set dataset
-        dataset_idx = cfg.dataset
-        if dataset_idx is None or dataset_idx not in range(len(datasets)):
-            raise ValueError(f'No configuration was given for dataset with index {dataset_idx}')
-        self._dataset = datasets[dataset_idx]
-        
         # Set model
         model_idx = cfg.model
         if model_idx is None or model_idx not in range(len(models)):
@@ -50,16 +44,19 @@ class TrainingConfig:
         self._log_file = os.path.join(self._log_dir, 'training.log')
         self._pretrain_log_file = os.path.join(self._log_dir, 'pretrain.log')
         self._classification_log_file = os.path.join(self._log_dir, 'classification.log')
+        self._finetune_log_file = os.path.join(self._log_dir, 'finetune.log')
         
         # Other configs
         self._distributed = cfg.distributed
-        self._set_pretraining(cfg.pretraining_args, optimizers, lr_schedulers)
-        self._set_classification(cfg.classification_args, optimizers, lr_schedulers)
+        self._set_pretraining(cfg.pretraining_args, datasets, optimizers, lr_schedulers)
+        self._set_classification(cfg.classification_args, datasets, optimizers, lr_schedulers)
+        self._set_finetune(cfg.finetune_args, datasets, optimizers, lr_schedulers)
         self._set_resume(cfg.resume)
     
     def _set_pretraining(
         self,
         cfg: Optional[dict],
+        datasets: List[DatasetConfig], 
         optimizers: List[OptimizerConfig],
         lr_schedulers: List[LRSchedulerConfig]):
         
@@ -69,14 +66,14 @@ class TrainingConfig:
             cfg.work_dir = os.path.join(self.work_dir, 'pretrain')
             cfg.seed = self._seed
             cfg.distributed = self._distributed
-            cfg.dataset = self._dataset
             cfg.model = self._model
             
-            self._pretraining = PretrainingConfig(cfg, optimizers, lr_schedulers)
+            self._pretraining = PretrainingConfig(cfg, datasets, optimizers, lr_schedulers)
             
     def _set_classification(
         self, 
-        cfg: Optional[dict], 
+        cfg: Optional[dict],
+        datasets: List[DatasetConfig], 
         optimizers: List[OptimizerConfig], 
         lr_schedulers: List[LRSchedulerConfig]):
         
@@ -86,21 +83,40 @@ class TrainingConfig:
             cfg.work_dir = os.path.join(self.work_dir, 'classification')
             cfg.seed = self._seed
             cfg.distributed = self._distributed
-            cfg.dataset = self._dataset
             cfg.model = self._model
             cfg.pretrain_weights = self._pretraining.best_weights_file \
                 if self._pretraining is not None else None
             
-            self._classification = ClassificationConfig(cfg, optimizers, lr_schedulers)
+            self._classification = ClassificationConfig(cfg, datasets, optimizers, lr_schedulers)
+            
+    def _set_finetune(
+        self, 
+        cfg: Optional[dict], 
+        datasets: List[DatasetConfig],
+        optimizers: List[OptimizerConfig], 
+        lr_schedulers: List[LRSchedulerConfig]):
+        
+        self._finetune = None
+        if cfg is not None:
+            cfg.debug = self._debug
+            cfg.work_dir = os.path.join(self.work_dir, 'finetune')
+            cfg.seed = self._seed
+            cfg.distributed = self._distributed
+            cfg.model = self._model
+            cfg.pretrain_weights = self._classification.best_weights_file \
+                if self._classification is not None else None
+            
+            self._finetune = ClassificationConfig(cfg, datasets, optimizers, lr_schedulers)
         
     def _set_resume(self, resume: Optional[str]):
         self._resume = resume
         if resume is None:
             self._process_pretraining = self._pretraining is not None
             self._process_classification = self._classification is not None
+            self._process_finetune = self._finetune is not None
             return
         
-        regex = r'^[cp]-\d+$'
+        regex = r'^[cpf]-\d+$'
         if re.search(regex, resume) is None:
             raise ValueError(f'Resume field in training config must be a string matching the regex {regex}')
         
@@ -113,21 +129,30 @@ class TrainingConfig:
                 self._pretraining.resume_checkpoint = epoch
                 self._process_pretraining = True
                 self._process_classification = self._classification is not None
-        else:
+                self._process_finetune = self._finetune is not None
+        elif part == 'c':
             if self._classification is None:
                 raise ValueError(f'Cannot resume from {resume} since classification args are missing')
             else:
                 self._classification.resume_checkpoint = epoch
                 self._process_pretraining = False
                 self._process_classification = True
+                self._process_finetune = self._finetune is not None
+        else:
+            if self._finetune is None:
+                raise ValueError(f'Cannot resume from {resume} since finetune args are missing')
+            else:
+                self._finetune.resume_checkpoint = epoch
+                self._process_pretraining = False
+                self._process_classification = False
+                self._process_finetune = True
     
     def to_dict(self, architecture: bool = False) -> dict:
         model = self._model.to_dict(architecture)
         if not architecture:
             model.update({'architecture': self._model_file})
         
-        d = {'dataset': self._dataset.to_dict(generate=False, training=True),
-             'model': model}
+        d = {'model': model}
         
         if self._resume is not None:
             d.update({'resume': self._resume})
@@ -173,10 +198,6 @@ class TrainingConfig:
         return self._model_file
     
     @property
-    def dataset(self) -> DatasetConfig:
-        return self._dataset
-    
-    @property
     def model(self) -> ModelConfig:
         return self._model
     
@@ -187,6 +208,10 @@ class TrainingConfig:
     @property
     def classification(self) -> Optional[ClassificationConfig]:
         return self._classification
+    
+    @property
+    def finetune(self) -> Optional[ClassificationConfig]:
+        return self._finetune
     
     @property
     def distributed(self) -> DistributedConfig:
@@ -202,7 +227,11 @@ class TrainingConfig:
 
 
 class ClassificationConfig:
-    def __init__(self, cfg: dict, optimizers: List[OptimizerConfig], lr_schedulers: List[LRSchedulerConfig]) -> None:
+    def __init__(self, 
+                 cfg: dict,
+                 datasets: List[DatasetConfig], 
+                 optimizers: List[OptimizerConfig], 
+                 lr_schedulers: List[LRSchedulerConfig]) -> None:
         
         # Setup working directory
         self._work_dir = cfg.work_dir
@@ -236,7 +265,12 @@ class ClassificationConfig:
         self._debug = cfg.debug
         self._seed = cfg.seed if cfg.seed is not None else 0
         self._distributed = cfg.distributed
-        self._dataset = cfg.dataset
+        
+        dataset_idx = cfg.dataset
+        if dataset_idx is None or dataset_idx not in range(len(datasets)):
+            raise ValueError(f'No configuration was given for dataset with index {dataset_idx}')
+        self._dataset = datasets[dataset_idx]
+        
         self._model = cfg.model
         self._pretrain_weights = cfg.pretrain_weights
         
@@ -257,7 +291,8 @@ class ClassificationConfig:
             self._label_smoothing = 0.0
     
     def to_dict(self) -> dict:
-        d = {'seed': self._seed, 
+        d = {'dataset': self._dataset.to_dict(generate=False, training=True),
+             'seed': self._seed, 
              'train-batch-size': self._train_batch_size, 
              'eval-batch-size': self._eval_batch_size, 
              'accumulation-steps': self._accumulation_steps, 
@@ -363,7 +398,11 @@ class ClassificationConfig:
         return self._pretrain_weights
     
 class PretrainingConfig:
-    def __init__(self, cfg: dict, optimizers: List[OptimizerConfig], lr_schedulers: List[LRSchedulerConfig]) -> None:
+    def __init__(self, 
+                 cfg: dict,
+                 datasets: List[DatasetConfig], 
+                 optimizers: List[OptimizerConfig], 
+                 lr_schedulers: List[LRSchedulerConfig]) -> None:
         
         # Setup working directory
         self._work_dir = cfg.work_dir
@@ -395,7 +434,12 @@ class PretrainingConfig:
         self._debug = cfg.debug
         self._seed = cfg.seed if cfg.seed is not None else 0
         self._distributed = cfg.distributed
-        self._dataset = cfg.dataset
+        
+        dataset_idx = cfg.dataset
+        if dataset_idx is None or dataset_idx not in range(len(datasets)):
+            raise ValueError(f'No configuration was given for dataset with index {dataset_idx}')
+        self._dataset = datasets[dataset_idx]
+        
         self._model = cfg.model
         
         self._reconstruction_lambda = cfg.reconstruction_lambda
@@ -419,7 +463,8 @@ class PretrainingConfig:
         self._lr_scheduler = lr_schedulers[scheduler_idx]
         
     def to_dict(self) -> dict:
-        d = {'seed': self._seed,
+        d = {'dataset': self._dataset.to_dict(generate=False, training=True),
+             'seed': self._seed,
              'train-batch-size': self._train_batch_size,
              'eval-batch-size': self._eval_batch_size,
              'accumulation-steps': self._accumulation_steps, 

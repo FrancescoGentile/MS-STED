@@ -6,14 +6,8 @@ import numpy as np
 
 class SkeletonGraph:
     
-    @property
-    def adjacency_matrix(self) -> np.ndarray:
+    def adjacency_matrix(self, self_loops: bool) -> np.ndarray:
         raise NotImplementedError
     
-    @property
-    def laplacian_matrix(self) -> np.ndarray:
-        raise NotImplementedError
-    
-    @property
-    def joints_connections(self) -> np.ndarray:
+    def bones(self) -> np.ndarray:
         raise NotImplementedError

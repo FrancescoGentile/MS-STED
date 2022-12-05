@@ -81,9 +81,10 @@ class ClassificationModel(nn.Module):
     
     def forward(self, joints: torch.Tensor, bones: torch.Tensor) -> torch.Tensor:
         # Change shape: (N, C, T, V, M) -> (N * M, C, T, V)
-        N, C, T, V, M = joints.shape
-        j = joints.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
-        b = bones.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, V)
+        N, C, T, J, M = joints.shape
+        B = bones.shape[3]
+        j = joints.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, J)
+        b = bones.permute(0, 4, 1, 2, 3).contiguous().view(N * M, C, T, B)
         
         # Apply embeddings
         x: torch.Tensor = self.embeddings(j, b)

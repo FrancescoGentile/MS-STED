@@ -32,7 +32,7 @@ from ..dataset.skeleton import SkeletonGraph
 from .config import ClassificationConfig
 from . import metrics
         
-class ClassificationProcessor: 
+class FinetuneProcessor: 
     
     def __init__(self, config: ClassificationConfig, logger: logging.Logger, writer: Optional[SummaryWriter]) -> None:
         self._config = config
@@ -156,16 +156,17 @@ class ClassificationProcessor:
         embeddings = Embeddings(model_cfg.embeddings, channels, num_frames, skeleton)
         encoder = Encoder(model_cfg.encoder, False)
         if self._config.pretrain_weights is not None:
-            decoder = Decoder(self._config.model.decoder, self._config.model.encoder)
-            reconstructor = Reconstructor(model_cfg.decoder.out_channels, channels, model_cfg.feature_dropout)
-            discriminator = Discriminator(model_cfg.decoder.out_channels, model_cfg.feature_dropout)
-            model = ReconstructorDiscriminatorModel(embeddings, encoder, decoder, reconstructor, discriminator)
-            
             state_dict = torch.load(self._config.pretrain_weights, map_location=self._device)
+            num_old_actions = state_dict['classifier.fc.weight'].shape[0]
+            
+            classifier = Classifier(model_cfg.encoder.out_channels, num_old_actions, model_cfg.feature_dropout) 
+            model = ClassificationModel(embeddings, encoder, classifier)
+            
             model.load_state_dict(state_dict)
-        
-        classifier = Classifier(model_cfg.encoder.out_channels, num_classes, model_cfg.feature_dropout) 
-        model = ClassificationModel(embeddings, encoder, classifier)
+            model.classifier = Classifier(model_cfg.encoder.out_channels, num_classes, model_cfg.feature_dropout) 
+        else:
+            classifier = Classifier(model_cfg.encoder.out_channels, num_classes, model_cfg.feature_dropout) 
+            model = ClassificationModel(embeddings, encoder, classifier)
         
         self._logger.info(f'Model: {model_cfg.name}')
         self._save_model_description(model)
@@ -249,16 +250,16 @@ class ClassificationProcessor:
     def _init_wandb_metrics(self):
         if self._config.distributed.is_master():
             for metr, phase in [(self._train_metrics, 'train'), (self._eval_metrics, 'eval')]:
-                epoch = f'classification/{phase}/epoch'
+                epoch = f'finetune/{phase}/epoch'
                 wandb.run.define_metric(epoch)
                 
                 if phase == 'train':
-                    wandb.run.define_metric(f'classification/{phase}/learning_rate', step_metric=epoch, summary='none')
+                    wandb.run.define_metric(f'finetune/{phase}/learning_rate', step_metric=epoch, summary='none')
                 
                 # f1_score, loss, precision, recall, top1_acc, top5_acc
                 summaries = ['max', 'min', 'max', 'max', 'max', 'max', 'max']
                 for name, summary in zip(metr.keys(), summaries):
-                    wandb.run.define_metric(f'classification/{phase}/{name}', step_metric=epoch, summary=summary)
+                    wandb.run.define_metric(f'finetune/{phase}/{name}', step_metric=epoch, summary=summary)
     
     def _set_metrics(self):
         num_classes = self._train_dataset.num_classes
@@ -321,13 +322,13 @@ class ClassificationProcessor:
         # Add metrics to tensorboard
         if self._config.distributed.is_local_master():
             if lr is not None:
-                self._writer.add_scalar(f'classification/{phase}/learning_rate', lr[0], epoch)
-            self._writer.add_scalar(f'classification/{phase}/loss', loss, epoch)
-            self._writer.add_scalar(f'classification/{phase}/top1_accuracy', top1_acc, epoch)
-            self._writer.add_scalar(f'classification/{phase}/top5_accuracy', top5_acc, epoch)
-            self._writer.add_scalar(f'classification/{phase}/precision', precision, epoch)
-            self._writer.add_scalar(f'classification/{phase}/recall', recall, epoch)
-            self._writer.add_scalar(f'classification/{phase}/f1_score', f1_score, epoch)
+                self._writer.add_scalar(f'finetune/{phase}/learning_rate', lr[0], epoch)
+            self._writer.add_scalar(f'finetune/{phase}/loss', loss, epoch)
+            self._writer.add_scalar(f'finetune/{phase}/top1_accuracy', top1_acc, epoch)
+            self._writer.add_scalar(f'finetune/{phase}/top5_accuracy', top5_acc, epoch)
+            self._writer.add_scalar(f'finetune/{phase}/precision', precision, epoch)
+            self._writer.add_scalar(f'finetune/{phase}/recall', recall, epoch)
+            self._writer.add_scalar(f'finetune/{phase}/f1_score', f1_score, epoch)
             
             if not train:
                 conf_matrix = metrics_dict['confusion'].cpu().detach().numpy()
@@ -336,15 +337,15 @@ class ClassificationProcessor:
         # Add metrics to wandb
         if self._config.distributed.is_master():
             if lr is not None:
-                wandb.log({f'classification/{phase}/learning_rate': lr[0]}, commit=False)
+                wandb.log({f'finetune/{phase}/learning_rate': lr[0]}, commit=False)
             wandb.log({
-                f'classification/{phase}/epoch': epoch,
-                f'classification/{phase}/loss': loss,
-                f'classification/{phase}/top1_acc': top1_acc,
-                f'classification/{phase}/top5_acc': top5_acc,
-                f'classification/{phase}/precision': precision,
-                f'classification/{phase}/recall': recall,
-                f'classification/{phase}/f1_score': f1_score}, commit=True)
+                f'finetune/{phase}/epoch': epoch,
+                f'finetune/{phase}/loss': loss,
+                f'finetune/{phase}/top1_acc': top1_acc,
+                f'finetune/{phase}/top5_acc': top5_acc,
+                f'finetune/{phase}/precision': precision,
+                f'finetune/{phase}/recall': recall,
+                f'finetune/{phase}/f1_score': f1_score}, commit=True)
         
         # Add metrics to file
         with open(self._config.metrics_file, mode='a', newline='') as f:
@@ -452,7 +453,7 @@ class ClassificationProcessor:
     
     def start(self):
         try:
-            self._logger.info('Starting training ...')
+            self._logger.info('Starting finetuning ...')
         
             if self._checkpoint is not None:
                 start_epoch = self._checkpoint['start_epoch']
@@ -479,7 +480,7 @@ class ClassificationProcessor:
                 if (epoch + 1) % self._config.save_interleave == 0:
                     self._save_checkpoint(epoch, best_results)
    
-            self._logger.info('Finished training ...')
+            self._logger.info('Finished finetuning ...')
             self._logger.info('Best results:')
             self._logger.info(f'\tepoch: {best_results["epoch"]}')
             self._logger.info(f'\ttop1 accuracy: {best_results["top1_acc"]}')

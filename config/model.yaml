@@ -8,6 +8,7 @@ structure_dropout: 0.2
 embeddings:
   temporal_channels: 64
   type_channels: 5
+  id_channels: 25
   channels: 64
 encoder:
   blocks:
